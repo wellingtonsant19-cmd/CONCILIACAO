@@ -37,55 +37,36 @@ code, .mono { font-family: 'IBM Plex Mono', monospace; }
 }
 .stat-label { font-size: 10px; color: #64748b; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 4px; }
 .stat-value { font-size: 22px; font-weight: 800; color: #e2e8f0; font-family: 'IBM Plex Mono', monospace; }
-.stat-value.green { color: #4ade80; }
+.stat-value.green  { color: #4ade80; }
 .stat-value.yellow { color: #f59e0b; }
-.stat-value.red { color: #f87171; }
+.stat-value.red    { color: #f87171; }
 
-.combo-header {
-    background: #0f172a;
-    border: 1px solid #1e3a5f;
-    border-radius: 10px 10px 0 0;
-    padding: 14px 20px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
+.alert-retencao {
+    background: #ef444410; border: 1px solid #ef444430;
+    border-radius: 8px; padding: 14px 18px;
+    color: #fca5a5; font-size: 13px; margin-top: 12px;
 }
-.combo-best {
-    border-color: #3b82f6 !important;
-    box-shadow: 0 0 0 1px #3b82f620;
+.alert-multi {
+    background: #f59e0b10; border: 1px solid #f59e0b30;
+    border-radius: 8px; padding: 12px 16px;
+    color: #fcd34d; font-size: 13px; margin-bottom: 16px;
+}
+.alert-escopo {
+    background: #8b5cf610; border: 1px solid #8b5cf630;
+    border-radius: 8px; padding: 12px 16px;
+    color: #c4b5fd; font-size: 13px; margin-bottom: 16px;
 }
 .badge {
-    display: inline-block;
-    border-radius: 4px;
-    padding: 2px 8px;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
+    display: inline-block; border-radius: 4px;
+    padding: 2px 8px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
 }
 .badge-green  { background: #22c55e20; color: #4ade80;  border: 1px solid #22c55e40; }
 .badge-yellow { background: #f59e0b20; color: #fbbf24;  border: 1px solid #f59e0b40; }
 .badge-red    { background: #ef444420; color: #f87171;  border: 1px solid #ef444440; }
 .badge-blue   { background: #3b82f620; color: #60a5fa;  border: 1px solid #3b82f640; }
+.badge-purple { background: #8b5cf620; color: #c4b5fd;  border: 1px solid #8b5cf640; }
 .badge-gray   { background: #33415520; color: #94a3b8;  border: 1px solid #33415540; }
 
-.alert-retencao {
-    background: #ef444410;
-    border: 1px solid #ef444430;
-    border-radius: 8px;
-    padding: 14px 18px;
-    color: #fca5a5;
-    font-size: 13px;
-    margin-top: 12px;
-}
-.alert-multi {
-    background: #f59e0b10;
-    border: 1px solid #f59e0b30;
-    border-radius: 8px;
-    padding: 12px 16px;
-    color: #fcd34d;
-    font-size: 13px;
-    margin-bottom: 16px;
-}
 div[data-testid="stDataFrame"] { border: 1px solid #1e293b; border-radius: 8px; overflow: hidden; }
 </style>
 """, unsafe_allow_html=True)
@@ -233,7 +214,7 @@ def solver_milp(valores, alvo, max_notas):
         n    = len(keys)
         c    = np.ones(n)
         tol  = TOLERANCIA
-        constraints = LinearConstraint(vals.reshape(1, -1), lb=alvo - tol, ub=alvo + tol)
+        constraints  = LinearConstraint(vals.reshape(1, -1), lb=alvo - tol, ub=alvo + tol)
         constraints2 = LinearConstraint(np.ones((1, n)), lb=0, ub=max_notas)
         bounds = Bounds(lb=np.zeros(n), ub=np.ones(n))
         res = milp(c, constraints=[constraints, constraints2],
@@ -257,8 +238,7 @@ def _score(combo, valores, df_cli, alvo):
     soma    = round(sum(round(valores.get(k, 0), 2) for k in combo), 2)
     dif     = round(abs(soma - alvo_r), 2)
     n_notas = len(combo)
-    rbases  = set()
-    atrasos = []
+    rbases, atrasos = set(), []
     for chave in combo:
         idx_str, _ = chave.split("|")
         try:
@@ -321,19 +301,35 @@ def buscar_combinacoes(valores_raw, alvo, df_cli, max_notas=MAX_NOTAS):
     resultado = ranquear(brutos, valores, df_cli, alvo)
     return resultado, {"pre": len(valores), "camada": camada}
 
-def conciliar(df_cli, valor_alvo):
+def _montar_df_valores(df_sub):
+    """Monta dicionário de valores para um subconjunto de notas."""
     valores = {}
-    for idx, row in df_cli.iterrows():
+    for idx, row in df_sub.iterrows():
         for nome, valor in gerar_opcoes_nota(row):
             valores[f"{idx}|{nome}"] = valor
+    return valores
 
+def conciliar(df_cli, valor_alvo, escopo="direto"):
+    """
+    escopo:
+      "direto"  — df_cli já é o conjunto certo (CNPJ ou NOME)
+      "cidade"  — aplica busca em cascata: CNPJ individual → grupo RBASE → cidade
+    """
     t0 = time.time()
-    combos, meta = buscar_combinacoes(valores, valor_alvo, df_cli)
+
+    if escopo == "cidade":
+        resultados_raw, meta, origem = _conciliar_cascata_cidade(df_cli, valor_alvo)
+    else:
+        valores = _montar_df_valores(df_cli)
+        resultados_raw, meta = buscar_combinacoes(valores, valor_alvo, df_cli)
+        origem = "cnpj"
+
     elapsed = round((time.time() - t0) * 1000)
     meta["tempo_ms"] = elapsed
+    meta["origem"]   = origem
 
     resultados = []
-    for dif, combo in combos:
+    for dif, combo in resultados_raw:
         rbases, linhas = [], []
         total = 0
         for chave in combo:
@@ -358,36 +354,96 @@ def conciliar(df_cli, valor_alvo):
             if rb and rb not in rbases: rbases.append(rb)
 
             linhas.append({
-                "NF":              row.get("nf",    idx),
-                "Nome":            str(row.get("nome",  "")),
-                "Venc.":           row.get("venc",  ""),
-                "Atraso":          row.get("atraso", ""),
-                "Saldo":           s,
-                "IR":              ir,
-                "ISS":             iss,
-                "Vlr Utilizado":   val,
-                "Tipo":            tipo,
-                "Retencao":        retencao,
+                "NF":            row.get("nf",    idx),
+                "Nome":          str(row.get("nome",  "")),
+                "CNPJ":          str(row.get("cnpj",  "")),
+                "Venc.":         row.get("venc",  ""),
+                "Atraso":        row.get("atraso", ""),
+                "Saldo":         s,
+                "IR":            ir,
+                "ISS":           iss,
+                "Vlr Utilizado": val,
+                "Tipo":          tipo,
+                "Retencao":      retencao,
             })
 
         resultados.append({
-            "dif":    round(dif, 2),
-            "total":  round(total, 2),
-            "rbase":  " / ".join(rbases) or "N/A",
-            "notas":  pd.DataFrame(linhas),
+            "dif":   round(dif, 2),
+            "total": round(total, 2),
+            "rbase": " / ".join(rbases) or "N/A",
+            "notas": pd.DataFrame(linhas),
         })
 
     return resultados, meta
+
+# ============================================================
+# BUSCA EM CASCATA PARA CIDADE
+# ============================================================
+
+def _conciliar_cascata_cidade(df_cidade, valor_alvo):
+    """
+    Tenta fechar o valor em 3 camadas, parando na primeira que encontrar resultado:
+
+    Camada A — CNPJ individual
+        Para cada CNPJ distinto da cidade, tenta fechar o valor
+        usando somente as notas daquele CNPJ.
+        Lógica: o pagamento mais comum é de um único pagador.
+
+    Camada B — Grupo RBASE
+        Agrupa CNPJs que compartilham a mesma RBASE e tenta fechar
+        o valor dentro de cada grupo.
+        Lógica: entidades do mesmo grupo econômico pagam juntas.
+
+    Camada C — Cidade ampla (fallback)
+        Abre para todos os CNPJs da cidade.
+        Sinaliza que a composição mistura pagadores distintos.
+    """
+
+    # ── Camada A: CNPJ individual ─────────────────────────────
+    col_cnpj = "cnpj_limpo" if "cnpj_limpo" in df_cidade.columns else "cnpj"
+    for cnpj_val in df_cidade[col_cnpj].unique():
+        df_sub = df_cidade[df_cidade[col_cnpj] == cnpj_val]
+        valores = _montar_df_valores(df_sub)
+        res, meta = buscar_combinacoes(valores, valor_alvo, df_sub)
+        if res:
+            nome_cnpj = df_sub["nome"].iloc[0] if "nome" in df_sub.columns else cnpj_val
+            meta["escopo_descricao"] = f"CNPJ individual: {nome_cnpj}"
+            return res, meta, "cnpj_individual"
+
+    # ── Camada B: Grupo RBASE ─────────────────────────────────
+    if "rbase" in df_cidade.columns:
+        for rbase_val in df_cidade["rbase"].unique():
+            df_sub = df_cidade[df_cidade["rbase"] == rbase_val]
+            if df_sub["cnpj_limpo" if "cnpj_limpo" in df_cidade.columns else "cnpj"].nunique() < 2:
+                continue   # grupo com só 1 CNPJ já foi testado na camada A
+            valores = _montar_df_valores(df_sub)
+            res, meta = buscar_combinacoes(valores, valor_alvo, df_sub)
+            if res:
+                meta["escopo_descricao"] = f"Grupo RBASE {rbase_val} ({len(df_sub)} notas de {df_sub['cnpj'].nunique() if 'cnpj' in df_sub.columns else '?'} CNPJs)"
+                return res, meta, "grupo_rbase"
+
+    # ── Camada C: Cidade ampla ────────────────────────────────
+    valores = _montar_df_valores(df_cidade)
+    res, meta = buscar_combinacoes(valores, valor_alvo, df_cidade)
+    meta["escopo_descricao"] = f"Cidade completa ({df_cidade[col_cnpj].nunique()} CNPJs distintos)"
+    return res, meta, "cidade_ampla"
 
 # ============================================================
 # HELPERS DE EXIBIÇÃO
 # ============================================================
 
 TIPO_BADGE = {
-    "saldo":        ("🟢 Saldo",          "green"),
-    "saldo_ir":     ("🟡 Saldo − IR",     "yellow"),
-    "saldo_iss":    ("🟡 Saldo − ISS",    "yellow"),
-    "saldo_ir_iss": ("🔴 Saldo − IR/ISS", "red"),
+    "saldo":        ("🟢 Saldo",           "green"),
+    "saldo_ir":     ("🟡 Saldo − IR",      "yellow"),
+    "saldo_iss":    ("🟡 Saldo − ISS",     "yellow"),
+    "saldo_ir_iss": ("🔴 Saldo − IR/ISS",  "red"),
+}
+
+ORIGEM_CONFIG = {
+    "cnpj_individual": ("🎯 CNPJ individual",    "blue",   "Composição de notas de um único pagador."),
+    "grupo_rbase":     ("🔗 Grupo RBASE",         "purple", "Composição mistura CNPJs do mesmo grupo econômico (mesma RBASE)."),
+    "cidade_ampla":    ("⚠️  Cidade completa",    "yellow", "Atenção: composição mistura CNPJs de pagadores distintos. Confirme se houve pagamento conjunto."),
+    "cnpj":            ("🎯 Busca direta",         "blue",   ""),
 }
 
 def brl(v):
@@ -401,12 +457,12 @@ def fmt_tipo(tipo):
     return label
 
 def exibir_combo(combo, i, n_total):
-    is_best = (i == 0)
+    is_best      = (i == 0)
     tem_retencao = combo["notas"]["Retencao"].abs().gt(TOLERANCIA).any()
-    df = combo["notas"].copy()
+    df           = combo["notas"].copy()
 
     tags = []
-    if is_best:    tags.append('<span class="badge badge-blue">★ MELHOR OPÇÃO</span>')
+    if is_best:      tags.append('<span class="badge badge-blue">★ MELHOR OPÇÃO</span>')
     if tem_retencao: tags.append('<span class="badge badge-red">⚠ RETENÇÃO DETECTADA</span>')
 
     st.markdown(f"""
@@ -424,15 +480,24 @@ def exibir_combo(combo, i, n_total):
             {''.join(tags)}
             <span style="margin-left:auto; font-size:12px; color:#64748b;">
                 {len(df)} nota(s) &nbsp;|&nbsp; RBASE: {combo['rbase']}
-                &nbsp;|&nbsp; Total: <b style="color:{'#4ade80' if combo['dif']==0 else '#f59e0b'};">{brl(combo['total'])}</b>
-                &nbsp;|&nbsp; Δ: <b style="color:{'#4ade80' if combo['dif']==0 else '#f87171'};">{brl(combo['dif'])}</b>
+                &nbsp;|&nbsp; Total:
+                <b style="color:{'#4ade80' if combo['dif']==0 else '#f59e0b'};">{brl(combo['total'])}</b>
+                &nbsp;|&nbsp; Δ:
+                <b style="color:{'#4ade80' if combo['dif']==0 else '#f87171'};">{brl(combo['dif'])}</b>
             </span>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # Formata colunas monetárias
     df_show = df.copy()
+    # Mostra CNPJ só se a combinação tiver mais de 1 CNPJ distinto
+    cnpjs_distintos = df_show["CNPJ"].nunique() if "CNPJ" in df_show.columns else 1
+    colunas_exibir = ["NF", "Nome"]
+    if cnpjs_distintos > 1:
+        colunas_exibir.append("CNPJ")
+    colunas_exibir += ["Venc.", "Atraso", "Saldo", "IR", "ISS", "Vlr Utilizado", "Tipo"]
+    df_show = df_show[[c for c in colunas_exibir if c in df_show.columns]]
+
     for col in ["Saldo", "IR", "ISS", "Vlr Utilizado", "Retencao"]:
         if col in df_show.columns:
             df_show[col] = df_show[col].apply(brl)
@@ -443,12 +508,8 @@ def exibir_combo(combo, i, n_total):
         )
 
     st.dataframe(
-        df_show,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Atraso": st.column_config.NumberColumn("Atraso", format="%d dias"),
-        }
+        df_show, use_container_width=True, hide_index=True,
+        column_config={"Atraso": st.column_config.NumberColumn("Atraso", format="%d dias")}
     )
 
     if tem_retencao:
@@ -486,7 +547,6 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# ── Upload ────────────────────────────────────────────────────
 uploaded = st.file_uploader(
     "📂 Carregar planilha de pendências",
     type=["xlsx", "xls"],
@@ -504,7 +564,6 @@ if uploaded:
 
     st.markdown("---")
 
-    # ── Parâmetros ────────────────────────────────────────────
     c1, c2, c3, c4 = st.columns([1.2, 2, 1.8, 1])
 
     with c1:
@@ -525,7 +584,6 @@ if uploaded:
         st.markdown("<br>", unsafe_allow_html=True)
         executar = st.button("Conciliar →", use_container_width=True, type="primary")
 
-    # ── Execução ──────────────────────────────────────────────
     if executar:
         if not identificador:
             st.error("Informe o identificador de busca.")
@@ -536,24 +594,32 @@ if uploaded:
                 st.error("Valor alvo inválido. Use vírgula como decimal (ex: 31.452,88).")
                 st.stop()
 
-            # Filtrar
             bp = busca_por.upper()
+
+            # ── Filtrar base e definir escopo ──────────────────
             if bp == "CNPJ":
-                limpo = identificador.replace(".", "").replace("/", "").replace("-", "").lstrip("0")
-                df_cli = df[df["cnpj_limpo"].str.lstrip("0") == limpo] if "cnpj_limpo" in df.columns else df[df["cnpj"].astype(str).str.replace(r"\D","",regex=True).str.lstrip("0") == limpo]
+                limpo  = identificador.replace(".", "").replace("/", "").replace("-", "").lstrip("0")
+                col_c  = "cnpj_limpo" if "cnpj_limpo" in df.columns else "cnpj"
+                df_cli = df[df[col_c].str.lstrip("0") == limpo]
+                escopo = "direto"
+
             elif bp == "CIDADE":
                 df_cli = df[df["cidade"].str.strip().str.upper() == identificador.strip().upper()]
-            else:
-                df_cli = df[df["nome"].str.strip().str.upper().str.contains(identificador.strip().upper(), na=False)]
+                escopo = "cidade"   # ← ativa busca em cascata
+
+            else:  # NOME
+                df_cli = df[df["nome"].str.strip().str.upper().str.contains(
+                    identificador.strip().upper(), na=False)]
+                escopo = "direto"
 
             if df_cli.empty:
                 st.error(f"Nenhum registro encontrado para {busca_por}: **{identificador}**")
                 st.stop()
 
             with st.spinner(f"Buscando combinações em {len(df_cli)} nota(s)..."):
-                resultados, meta = conciliar(df_cli, valor)
+                resultados, meta = conciliar(df_cli, valor, escopo=escopo)
 
-            # Stats
+            # ── Stats ──────────────────────────────────────────
             st.markdown("---")
             s1, s2, s3, s4 = st.columns(4)
             s1.markdown(f'<div class="stat-box"><div class="stat-label">Notas analisadas</div><div class="stat-value">{len(df_cli)}</div></div>', unsafe_allow_html=True)
@@ -563,13 +629,27 @@ if uploaded:
 
             st.markdown("<br>", unsafe_allow_html=True)
 
+            # ── Banner de escopo (só para busca por cidade) ────
+            if bp == "CIDADE" and resultados:
+                origem = meta.get("origem", "cnpj")
+                label, cor, descricao = ORIGEM_CONFIG.get(origem, ("", "gray", ""))
+                escopo_desc = meta.get("escopo_descricao", "")
+                css_class = f"alert-{'escopo' if cor == 'purple' else 'multi' if cor == 'yellow' else 'retencao' if cor == 'red' else 'multi'}"
+                if descricao:
+                    st.markdown(f"""
+                    <div class="{css_class}">
+                        <b>{label}</b> — {descricao}<br>
+                        <span style="opacity:0.7; font-size:11px;">{escopo_desc}</span>
+                    </div>
+                    """, unsafe_allow_html=True)
+
             if not resultados:
                 st.error("Nenhuma combinação encontrada. Verifique o valor ou tente ajustar a tolerância.")
             else:
                 if len(resultados) > 1:
                     st.markdown(f"""
                     <div class="alert-multi">
-                        ⚡ <b>{len(resultados)} composições distintas</b> encontradas para o valor alvo.
+                        ⚡ <b>{len(resultados)} composições distintas</b> encontradas.
                         A combinação <b>#1</b> é a mais simples e financeiramente recomendada.
                     </div>
                     """, unsafe_allow_html=True)
@@ -580,15 +660,20 @@ if uploaded:
 else:
     st.info("⬆️ Carregue a planilha de títulos vencidos para iniciar a conciliação.")
     st.markdown("""
-    **Como usar:**
-    1. Faça o upload da planilha `.xlsx` com os títulos vencidos
-    2. Selecione o tipo de busca (Cidade, CNPJ ou Nome)
-    3. Digite o identificador do cliente
-    4. Informe o valor recebido a conciliar
-    5. Clique em **Conciliar →**
+**Como usar:**
+1. Faça o upload da planilha `.xlsx` com os títulos vencidos
+2. Selecione o tipo de busca (Cidade, CNPJ ou Nome)
+3. Digite o identificador do cliente
+4. Informe o valor recebido a conciliar
+5. Clique em **Conciliar →**
 
-    **O motor identifica automaticamente:**
-    - ✅ A composição de notas mais simples para o valor informado
-    - ⚠️ Possíveis retenções indevidas de IR/ISS
-    - ⚡ Múltiplas composições quando existirem
+**Busca por Cidade — cascata automática:**
+- 🎯 Tenta primeiro fechar o valor com um único CNPJ
+- 🔗 Se não achar, tenta dentro do mesmo grupo RBASE
+- ⚠️ Só abre para a cidade inteira se as anteriores falharem (com aviso)
+
+**O motor identifica automaticamente:**
+- ✅ A composição de notas mais simples para o valor informado
+- ⚠️ Possíveis retenções indevidas de IR/ISS
+- ⚡ Múltiplas composições quando existirem
     """)
