@@ -697,52 +697,42 @@ def aba_calculadora():
         """, unsafe_allow_html=True)
 
         for i, (dif, soma, indices) in enumerate(resultados, 1):
-            is_best = (i == 1)
+            is_best  = (i == 1)
             parcelas = [vals[int(idx)] for idx in indices]
 
-            st.markdown(f"""
-            <div style="border:{'1.5px solid #3b82f6' if is_best else '1px solid #1e293b'};
-                 border-radius:12px; overflow:hidden; margin-bottom:16px;
-                 {'box-shadow:0 0 0 1px #3b82f620;' if is_best else ''}">
-                <div style="background:{'#1e3a5f' if is_best else '#0a0f1a'};
-                     padding:12px 20px; border-bottom:1px solid #1e293b;
-                     display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-                    <span style="background:{'#3b82f6' if is_best else '#334155'};
-                          color:#fff; border-radius:6px; padding:2px 10px;
-                          font-size:12px; font-weight:800; font-family:'IBM Plex Mono',monospace;">
-                        #{i}
-                    </span>
-                    {'<span class="badge badge-blue">★ MELHOR OPÇÃO</span>' if is_best else ''}
-                    <span style="margin-left:auto; font-size:12px; color:#64748b; font-family:'IBM Plex Mono',monospace;">
-                        {len(parcelas)} parcela(s) &nbsp;|&nbsp;
-                        Soma: <b style="color:{'#4ade80' if dif==0 else '#f59e0b'};">{brl(soma)}</b>
-                        &nbsp;|&nbsp; Δ: <b style="color:{'#4ade80' if dif==0 else '#f87171'};">{brl(dif)}</b>
-                    </span>
-                </div>
-                <div style="padding:16px 20px;">
-                    <div style="display:flex; flex-wrap:wrap; gap:8px;">
-                        {''.join(f"""
-                        <div style="background:#0a0f1a; border:1px solid #1e293b; border-radius:8px;
-                             padding:8px 16px; text-align:center; min-width:120px;">
-                            <div style="font-size:9px; color:#475569; letter-spacing:0.08em; margin-bottom:4px;">
-                                PARCELA {int(idx)+1}
-                            </div>
-                            <div style="font-family:'IBM Plex Mono',monospace; font-weight:700;
-                                 font-size:14px; color:#e2e8f0;">
-                                {brl(vals[int(idx)])}
-                            </div>
-                        </div>
-                        """ for idx in indices)}
-                    </div>
-                    <div style="margin-top:12px; padding-top:12px; border-top:1px solid #1e293b;
-                         font-size:12px; color:#475569; font-family:'IBM Plex Mono',monospace;">
-                        Índices: {", ".join(str(int(idx)+1) for idx in indices)}
-                        &nbsp;&nbsp;|&nbsp;&nbsp;
-                        Equação: {" + ".join(str(vals[int(idx)]) for idx in indices)} = {soma}
-                    </div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            # Cabeçalho do card
+            borda    = "1.5px solid #3b82f6" if is_best else "1px solid #1e293b"
+            bg_head  = "#1e3a5f"             if is_best else "#0a0f1a"
+            cor_num  = "#3b82f6"             if is_best else "#334155"
+            melhor   = " &nbsp; ★ MELHOR OPÇÃO" if is_best else ""
+            cor_soma = "#4ade80" if dif == 0 else "#f59e0b"
+            cor_dif  = "#4ade80" if dif == 0 else "#f87171"
+
+            st.markdown(
+                "<div style='border:" + borda + "; border-radius:12px 12px 0 0; overflow:hidden;'>"
+                "<div style='background:" + bg_head + "; padding:12px 20px; "
+                "display:flex; align-items:center; gap:12px; flex-wrap:wrap;'>"
+                "<span style='background:" + cor_num + "; color:#fff; border-radius:6px; "
+                "padding:2px 10px; font-size:13px; font-weight:800; font-family:monospace;'>"
+                "#" + str(i) + melhor + "</span>"
+                "<span style='margin-left:auto; font-size:12px; color:#94a3b8; font-family:monospace;'>"
+                + str(len(parcelas)) + " parcela(s) &nbsp;|&nbsp; "
+                "Soma: <b style='color:" + cor_soma + ";'>" + brl(soma) + "</b> &nbsp;|&nbsp; "
+                "Diferença: <b style='color:" + cor_dif + ";'>" + brl(dif) + "</b></span>"
+                "</div></div>",
+                unsafe_allow_html=True
+            )
+
+            # Tabela de parcelas
+            df_parc = pd.DataFrame({
+                "Nº":    [int(idx) + 1 for idx in indices],
+                "Valor": [brl(vals[int(idx)]) for idx in indices],
+            })
+            df_total = pd.DataFrame({"Nº": ["TOTAL"], "Valor": [brl(soma)]})
+            df_parc  = pd.concat([df_parc, df_total], ignore_index=True)
+            st.dataframe(df_parc, use_container_width=True, hide_index=True)
+            st.markdown("<div style='margin-bottom:16px;'></div>", unsafe_allow_html=True)
+
 
 
 # ============================================================
