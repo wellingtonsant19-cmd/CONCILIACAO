@@ -639,7 +639,7 @@ def aba_calculadora():
         )
         max_n = st.slider(
             "Máx. de parcelas por combinação",
-            min_value=1, max_value=15, value=8,
+            min_value=1, max_value=100, value=8,
             key="calc_maxn"
         )
         top_n = st.slider(
