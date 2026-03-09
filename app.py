@@ -254,9 +254,17 @@ def _score(combo, valores, df_cli, alvo):
     media_atraso = float(np.mean(atrasos)) if atrasos else 0
     return (dif, n_notas, len(rbases), -media_atraso)
 
+def _combo_sem_nf_duplicada(combo):
+    """Rejeita combinações onde o mesmo índice de nota aparece mais de uma vez.
+    Isso acontece quando o algoritmo seleciona duas variantes da mesma NF
+    (ex: saldo + saldo_ir da NF 405599 ao mesmo tempo)."""
+    indices = [chave.split("|")[0] for chave in combo]
+    return len(indices) == len(set(indices))
+
 def ranquear(brutos, valores, df_cli, alvo):
     vistas, com_score = set(), []
     for dif, combo in brutos:
+        if not _combo_sem_nf_duplicada(combo): continue   # ← correção
         fs = frozenset(combo)
         if fs in vistas: continue
         vistas.add(fs)
