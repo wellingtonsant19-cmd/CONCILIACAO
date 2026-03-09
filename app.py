@@ -542,35 +542,65 @@ def exibir_combo(combo, i, n_total):
 # CALCULADORA DE COMBINAÇÕES LIVRES (aba 2)
 # ============================================================
 
-def _parse_valores_livres(texto):
+def _parse_num(tok):
+    """Converte um token de texto para float, suportando formato BR e EN."""
+    import re
+    tok = tok.strip().replace("\xa0", "").replace(" ", "")
+    tok = re.sub(r"[R$]", "", tok)
+    if tok in ("-", "–", "—", ""):
+        return 0.0
+    if re.match(r"^-?\d{1,3}(\.\d{3})+(,\d+)?$", tok):
+        tok = tok.replace(".", "").replace(",", ".")
+    else:
+        tok = tok.replace(",", ".")
+    try:
+        return float(tok)
+    except ValueError:
+        return None
+
+def _parse_valores_livres(texto, modo="saldo"):
     """
-    Aceita valores colados de qualquer fonte:
-    - Um por linha: 1.234,56
-    - Separados por ponto-e-vírgula, vírgula ou tab
-    - Formato americano (1234.56) ou brasileiro (1.234,56)
-    Retorna lista de floats válidos.
+    Aceita dois formatos:
+    1. Valor simples por linha: 1.234,56
+    2. Tabular com tabs: Saldo \t IR \t ISS  (formato planilha)
+
+    modo:
+      "saldo"   → usa só a 1ª coluna
+      "liquido" → soma todas as colunas da linha (saldo + IR + ISS)
     """
     import re
-    tokens = re.split(r"[\n;|\t]+", texto)
-    vals = []
-    for tok in tokens:
-        tok = tok.strip()
-        if not tok:
-            continue
-        # Remove espaços internos e símbolo R$
-        tok = re.sub(r"[R$\s]", "", tok)
-        # Formato brasileiro: 1.234,56 → 1234.56
-        if re.match(r"^\d{1,3}(\.\d{3})+(,\d+)?$", tok):
-            tok = tok.replace(".", "").replace(",", ".")
+    rows = []
+    for line in texto.splitlines():
+        # Linha com tabs → formato tabular
+        if "\t" in line:
+            cols = re.split(r"\t", line)
         else:
-            tok = tok.replace(",", ".")
-        try:
-            v = float(tok)
-            if v > 0:
-                vals.append(round(v, 2))
-        except ValueError:
-            pass
-    return vals
+            # Linha simples: trata ; e | como separadores
+            cols = re.split(r"[;|]", line)
+
+        parsed = []
+        for c in cols:
+            v = _parse_num(c)
+            if v is not None:
+                parsed.append(v)
+
+        if not parsed:
+            continue
+
+        if modo == "liquido":
+            # Soma todos os valores da linha (IR e ISS já são negativos)
+            val = round(sum(parsed), 2)
+        else:
+            # Só o primeiro valor positivo da linha
+            val = next((v for v in parsed if v > 0), None)
+            if val is None:
+                continue
+            val = round(val, 2)
+
+        if val > 0:
+            rows.append(val)
+
+    return rows
 
 def _buscar_combinacoes_livres(valores_lista, alvo, max_n, top):
     """
@@ -622,15 +652,56 @@ def aba_calculadora():
     </div>
     """, unsafe_allow_html=True)
 
+    # ── Detectar se o texto colado tem tabs (formato planilha) ──
+    # Fazemos isso antes dos widgets para mostrar o radio só quando relevante
+
     c1, c2 = st.columns([2, 1])
 
     with c1:
         texto_vals = st.text_area(
-            "Cole os valores aqui (um por linha ou separados por ; )",
+            "Cole os valores aqui",
             height=220,
-            placeholder="124.170,17\n56.307,30\n47.724,75\n42.834,37\n30.894,68\n...",
-            help="Aceita formato brasileiro (1.234,56) ou americano (1234.56)"
+            placeholder=(
+                "Formato simples (um por linha):\n"
+                "124.170,17\n56.307,30\n47.724,75\n\n"
+                "── ou formato planilha (Saldo  IR  ISS) ──\n"
+                "629,94\t-14,40\t-\n"
+                "1.464,85\t-3,30\t-\n"
+                "147.436,07\t-7.051,24\t-"
+            ),
+            help=(
+                "Aceita valores simples (um por linha) ou copiados direto da planilha "
+                "com 3 colunas: Saldo, IR e ISS separados por tab."
+            ),
+            key="calc_texto"
         )
+
+        tem_tabs = "\t" in (texto_vals or "")
+        if tem_tabs:
+            modo = st.radio(
+                "Usar como valor de cada linha:",
+                ["Saldo bruto", "Líquido (Saldo + IR + ISS)"],
+                horizontal=True,
+                key="calc_modo",
+                help="'Saldo bruto' ignora IR/ISS. 'Líquido' soma as três colunas (IR e ISS já são negativos)."
+            )
+            modo_key = "liquido" if "Líquido" in modo else "saldo"
+
+            # Preview em tempo real dos valores reconhecidos
+            if texto_vals.strip():
+                preview = _parse_valores_livres(texto_vals, modo=modo_key)
+                if preview:
+                    st.caption(f"✅ {len(preview)} valores reconhecidos — soma: {brl(sum(preview))}")
+                    with st.expander("Ver valores que serão usados", expanded=False):
+                        df_prev = pd.DataFrame({
+                            "Nº":    range(1, len(preview)+1),
+                            "Valor": [brl(v) for v in preview],
+                        })
+                        st.dataframe(df_prev, use_container_width=True, hide_index=True)
+                else:
+                    st.caption("⚠️ Nenhum valor reconhecido ainda.")
+        else:
+            modo_key = "saldo"
 
     with c2:
         alvo_str = st.text_input(
@@ -665,7 +736,7 @@ def aba_calculadora():
             st.error("Valor alvo inválido.")
             return
 
-        vals = _parse_valores_livres(texto_vals)
+        vals = _parse_valores_livres(texto_vals, modo=modo_key)
         if not vals:
             st.error("Nenhum valor numérico reconhecido. Verifique o formato.")
             return
