@@ -539,7 +539,214 @@ def exibir_combo(combo, i, n_total):
         """, unsafe_allow_html=True)
 
 # ============================================================
-# INTERFACE PRINCIPAL
+# CALCULADORA DE COMBINAÇÕES LIVRES (aba 2)
+# ============================================================
+
+def _parse_valores_livres(texto):
+    """
+    Aceita valores colados de qualquer fonte:
+    - Um por linha: 1.234,56
+    - Separados por ponto-e-vírgula, vírgula ou tab
+    - Formato americano (1234.56) ou brasileiro (1.234,56)
+    Retorna lista de floats válidos.
+    """
+    import re
+    tokens = re.split(r"[\n;|\t]+", texto)
+    vals = []
+    for tok in tokens:
+        tok = tok.strip()
+        if not tok:
+            continue
+        # Remove espaços internos e símbolo R$
+        tok = re.sub(r"[R$\s]", "", tok)
+        # Formato brasileiro: 1.234,56 → 1234.56
+        if re.match(r"^\d{1,3}(\.\d{3})+(,\d+)?$", tok):
+            tok = tok.replace(".", "").replace(",", ".")
+        else:
+            tok = tok.replace(",", ".")
+        try:
+            v = float(tok)
+            if v > 0:
+                vals.append(round(v, 2))
+        except ValueError:
+            pass
+    return vals
+
+def _buscar_combinacoes_livres(valores_lista, alvo, max_n, top):
+    """
+    Usa o mesmo motor MITM para uma lista simples de floats.
+    Retorna lista de (soma, [indices_usados]).
+    """
+    # Cria dict chaveado por índice
+    valores = {str(i): v for i, v in enumerate(valores_lista)}
+    valores = preprocessar(valores, alvo)
+    if not valores:
+        return []
+
+    brutos = []
+    g = greedy(valores, alvo, max_n)
+    if g:
+        brutos.append(g)
+    mitm = meet_in_the_middle(valores, alvo, max_n)
+    brutos.extend(mitm)
+
+    if not brutos:
+        brutos.extend(solver_milp(valores, alvo, max_n))
+
+    # Deduplicar por índices
+    vistas, resultado = set(), []
+    for dif, combo in brutos:
+        idx_set = frozenset(combo)
+        if idx_set in vistas:
+            continue
+        vistas.add(idx_set)
+        soma = round(sum(float(valores.get(k, 0)) for k in combo), 2)
+        resultado.append((dif, soma, sorted(combo, key=lambda x: int(x))))
+
+    resultado.sort(key=lambda x: (x[0], len(x[2])))
+    return resultado[:top]
+
+def aba_calculadora():
+    st.markdown("""
+    <div style="background:#0a1628; border:1px solid #1e293b; border-radius:12px;
+         padding:20px 24px; margin-bottom:24px;">
+        <div style="font-family:'IBM Plex Sans',sans-serif; font-weight:700;
+             font-size:15px; color:#e2e8f0; margin-bottom:6px;">
+            🧮 Calculadora de Combinações
+        </div>
+        <div style="font-size:12px; color:#64748b;">
+            Cole uma lista de valores, informe o alvo e encontre quais combinações somam exatamente esse valor.
+            Útil para conciliar qualquer conjunto de números sem precisar de planilha.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    c1, c2 = st.columns([2, 1])
+
+    with c1:
+        texto_vals = st.text_area(
+            "Cole os valores aqui (um por linha ou separados por ; )",
+            height=220,
+            placeholder="124.170,17\n56.307,30\n47.724,75\n42.834,37\n30.894,68\n...",
+            help="Aceita formato brasileiro (1.234,56) ou americano (1234.56)"
+        )
+
+    with c2:
+        alvo_str = st.text_input(
+            "Valor alvo (R$)",
+            placeholder="Ex: 436.611,53",
+            key="calc_alvo"
+        )
+        max_n = st.slider(
+            "Máx. de parcelas por combinação",
+            min_value=1, max_value=15, value=8,
+            key="calc_maxn"
+        )
+        top_n = st.slider(
+            "Máx. de resultados",
+            min_value=1, max_value=20, value=10,
+            key="calc_top"
+        )
+        st.markdown("<br>", unsafe_allow_html=True)
+        calc_btn = st.button("🔍 Calcular combinações", use_container_width=True, type="primary", key="calc_btn")
+
+    if calc_btn:
+        if not texto_vals.strip():
+            st.error("Cole pelo menos um valor.")
+            return
+        if not alvo_str.strip():
+            st.error("Informe o valor alvo.")
+            return
+
+        try:
+            alvo = float(alvo_str.replace(".", "").replace(",", "."))
+        except Exception:
+            st.error("Valor alvo inválido.")
+            return
+
+        vals = _parse_valores_livres(texto_vals)
+        if not vals:
+            st.error("Nenhum valor numérico reconhecido. Verifique o formato.")
+            return
+
+        st.markdown("---")
+
+        # Stats rápidos
+        s1, s2, s3, s4 = st.columns(4)
+        s1.markdown(f'<div class="stat-box"><div class="stat-label">Valores colados</div><div class="stat-value">{len(vals)}</div></div>', unsafe_allow_html=True)
+        s2.markdown(f'<div class="stat-box"><div class="stat-label">Soma total</div><div class="stat-value" style="font-size:15px;">{brl(sum(vals))}</div></div>', unsafe_allow_html=True)
+        s3.markdown(f'<div class="stat-box"><div class="stat-label">Valor alvo</div><div class="stat-value green" style="font-size:15px;">{brl(alvo)}</div></div>', unsafe_allow_html=True)
+        s4.markdown(f'<div class="stat-box"><div class="stat-label">Diferença</div><div class="stat-value {"green" if abs(sum(vals)-alvo)<0.01 else "yellow"}" style="font-size:15px;">{brl(round(sum(vals)-alvo,2))}</div></div>', unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        with st.spinner("Buscando combinações..."):
+            t0 = time.time()
+            resultados = _buscar_combinacoes_livres(vals, alvo, max_n, top_n)
+            elapsed = round((time.time() - t0) * 1000)
+
+        if not resultados:
+            st.error("Nenhuma combinação encontrada. Tente aumentar o máximo de parcelas ou ajustar a tolerância.")
+            return
+
+        st.markdown(f"""
+        <div class="alert-multi">
+            ⚡ <b>{len(resultados)} combinação(ões)</b> encontrada(s) em <b>{elapsed}ms</b>.
+            A #1 usa o menor número de parcelas.
+        </div>
+        """, unsafe_allow_html=True)
+
+        for i, (dif, soma, indices) in enumerate(resultados, 1):
+            is_best = (i == 1)
+            parcelas = [vals[int(idx)] for idx in indices]
+
+            st.markdown(f"""
+            <div style="border:{'1.5px solid #3b82f6' if is_best else '1px solid #1e293b'};
+                 border-radius:12px; overflow:hidden; margin-bottom:16px;
+                 {'box-shadow:0 0 0 1px #3b82f620;' if is_best else ''}">
+                <div style="background:{'#1e3a5f' if is_best else '#0a0f1a'};
+                     padding:12px 20px; border-bottom:1px solid #1e293b;
+                     display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                    <span style="background:{'#3b82f6' if is_best else '#334155'};
+                          color:#fff; border-radius:6px; padding:2px 10px;
+                          font-size:12px; font-weight:800; font-family:'IBM Plex Mono',monospace;">
+                        #{i}
+                    </span>
+                    {'<span class="badge badge-blue">★ MELHOR OPÇÃO</span>' if is_best else ''}
+                    <span style="margin-left:auto; font-size:12px; color:#64748b; font-family:'IBM Plex Mono',monospace;">
+                        {len(parcelas)} parcela(s) &nbsp;|&nbsp;
+                        Soma: <b style="color:{'#4ade80' if dif==0 else '#f59e0b'};">{brl(soma)}</b>
+                        &nbsp;|&nbsp; Δ: <b style="color:{'#4ade80' if dif==0 else '#f87171'};">{brl(dif)}</b>
+                    </span>
+                </div>
+                <div style="padding:16px 20px;">
+                    <div style="display:flex; flex-wrap:wrap; gap:8px;">
+                        {''.join(f"""
+                        <div style="background:#0a0f1a; border:1px solid #1e293b; border-radius:8px;
+                             padding:8px 16px; text-align:center; min-width:120px;">
+                            <div style="font-size:9px; color:#475569; letter-spacing:0.08em; margin-bottom:4px;">
+                                PARCELA {int(idx)+1}
+                            </div>
+                            <div style="font-family:'IBM Plex Mono',monospace; font-weight:700;
+                                 font-size:14px; color:#e2e8f0;">
+                                {brl(vals[int(idx)])}
+                            </div>
+                        </div>
+                        """ for idx in indices)}
+                    </div>
+                    <div style="margin-top:12px; padding-top:12px; border-top:1px solid #1e293b;
+                         font-size:12px; color:#475569; font-family:'IBM Plex Mono',monospace;">
+                        Índices: {", ".join(str(int(idx)+1) for idx in indices)}
+                        &nbsp;&nbsp;|&nbsp;&nbsp;
+                        Equação: {" + ".join(str(vals[int(idx)]) for idx in indices)} = {soma}
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+
+# ============================================================
+# INTERFACE PRINCIPAL — com duas abas
 # ============================================================
 
 st.markdown("""
@@ -559,119 +766,126 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-uploaded = st.file_uploader(
-    "📂 Carregar planilha de pendências",
-    type=["xlsx", "xls"],
-    help="Arraste o arquivo .xlsx com os títulos vencidos"
-)
+aba_conciliacao, aba_calc = st.tabs([
+    "⚖️  Conciliação com Planilha",
+    "🧮  Calculadora de Combinações",
+])
 
-if uploaded:
-    with st.spinner("Lendo planilha..."):
-        df = carregar_planilha(uploaded.read(), uploaded.name)
+# ══════════════════════════════════════════════════════════════
+# ABA 1 — CONCILIAÇÃO COM PLANILHA
+# ══════════════════════════════════════════════════════════════
+with aba_conciliacao:
 
-    col1, col2, col3 = st.columns(3)
-    col1.markdown(f'<div class="stat-box"><div class="stat-label">Arquivo</div><div class="stat-value" style="font-size:14px;">{uploaded.name}</div></div>', unsafe_allow_html=True)
-    col2.markdown(f'<div class="stat-box"><div class="stat-label">Títulos</div><div class="stat-value green">{len(df):,}</div></div>', unsafe_allow_html=True)
-    col3.markdown(f'<div class="stat-box"><div class="stat-label">Colunas mapeadas</div><div class="stat-value">{len([c for c in COLUNAS if c in df.columns])}/{len(COLUNAS)}</div></div>', unsafe_allow_html=True)
+    uploaded = st.file_uploader(
+        "📂 Carregar planilha de pendências",
+        type=["xlsx", "xls"],
+        help="Arraste o arquivo .xlsx com os títulos vencidos"
+    )
 
-    st.markdown("---")
+    if uploaded:
+        with st.spinner("Lendo planilha..."):
+            df = carregar_planilha(uploaded.read(), uploaded.name)
 
-    c1, c2, c3, c4 = st.columns([1.2, 2, 1.8, 1])
+        col1, col2, col3 = st.columns(3)
+        col1.markdown(f'<div class="stat-box"><div class="stat-label">Arquivo</div><div class="stat-value" style="font-size:14px;">{uploaded.name}</div></div>', unsafe_allow_html=True)
+        col2.markdown(f'<div class="stat-box"><div class="stat-label">Títulos</div><div class="stat-value green">{len(df):,}</div></div>', unsafe_allow_html=True)
+        col3.markdown(f'<div class="stat-box"><div class="stat-label">Colunas mapeadas</div><div class="stat-value">{len([c for c in COLUNAS if c in df.columns])}/{len(COLUNAS)}</div></div>', unsafe_allow_html=True)
 
-    with c1:
-        busca_por = st.selectbox("Buscar por", ["Cidade", "CNPJ", "Nome"], index=0)
+        st.markdown("---")
 
-    with c2:
-        placeholder = {
-            "Cidade": "Ex: Abdon Batista",
-            "CNPJ":   "00.000.000/0001-00",
-            "Nome":   "Ex: Municipio de...",
-        }[busca_por]
-        identificador = st.text_input(busca_por, placeholder=placeholder)
+        c1, c2, c3, c4 = st.columns([1.2, 2, 1.8, 1])
 
-    with c3:
-        valor_str = st.text_input("Valor alvo (R$)", placeholder="Ex: 31.452,88")
+        with c1:
+            busca_por = st.selectbox("Buscar por", ["Cidade", "CNPJ", "Nome"], index=0)
 
-    with c4:
-        st.markdown("<br>", unsafe_allow_html=True)
-        executar = st.button("Conciliar →", use_container_width=True, type="primary")
+        with c2:
+            placeholder = {
+                "Cidade": "Ex: Abdon Batista",
+                "CNPJ":   "00.000.000/0001-00",
+                "Nome":   "Ex: Municipio de...",
+            }[busca_por]
+            identificador = st.text_input(busca_por, placeholder=placeholder)
 
-    if executar:
-        if not identificador:
-            st.error("Informe o identificador de busca.")
-        else:
-            try:
-                valor = float(valor_str.replace(".", "").replace(",", "."))
-            except Exception:
-                st.error("Valor alvo inválido. Use vírgula como decimal (ex: 31.452,88).")
-                st.stop()
+        with c3:
+            valor_str = st.text_input("Valor alvo (R$)", placeholder="Ex: 31.452,88")
 
-            bp = busca_por.upper()
-
-            # ── Filtrar base e definir escopo ──────────────────
-            if bp == "CNPJ":
-                limpo  = identificador.replace(".", "").replace("/", "").replace("-", "").lstrip("0")
-                col_c  = "cnpj_limpo" if "cnpj_limpo" in df.columns else "cnpj"
-                df_cli = df[df[col_c].str.lstrip("0") == limpo]
-                escopo = "direto"
-
-            elif bp == "CIDADE":
-                df_cli = df[df["cidade"].str.strip().str.upper() == identificador.strip().upper()]
-                escopo = "cidade"   # ← ativa busca em cascata
-
-            else:  # NOME
-                df_cli = df[df["nome"].str.strip().str.upper().str.contains(
-                    identificador.strip().upper(), na=False)]
-                escopo = "direto"
-
-            if df_cli.empty:
-                st.error(f"Nenhum registro encontrado para {busca_por}: **{identificador}**")
-                st.stop()
-
-            with st.spinner(f"Buscando combinações em {len(df_cli)} nota(s)..."):
-                resultados, meta = conciliar(df_cli, valor, escopo=escopo)
-
-            # ── Stats ──────────────────────────────────────────
-            st.markdown("---")
-            s1, s2, s3, s4 = st.columns(4)
-            s1.markdown(f'<div class="stat-box"><div class="stat-label">Notas analisadas</div><div class="stat-value">{len(df_cli)}</div></div>', unsafe_allow_html=True)
-            s2.markdown(f'<div class="stat-box"><div class="stat-label">Combinações</div><div class="stat-value {"yellow" if len(resultados) > 1 else "green"}">{len(resultados)}</div></div>', unsafe_allow_html=True)
-            s3.markdown(f'<div class="stat-box"><div class="stat-label">Tempo</div><div class="stat-value">{meta["tempo_ms"]}ms</div></div>', unsafe_allow_html=True)
-            s4.markdown(f'<div class="stat-box"><div class="stat-label">Algoritmo</div><div class="stat-value" style="font-size:14px;">{meta.get("camada","—")}</div></div>', unsafe_allow_html=True)
-
+        with c4:
             st.markdown("<br>", unsafe_allow_html=True)
+            executar = st.button("Conciliar →", use_container_width=True, type="primary")
 
-            # ── Banner de escopo (só para busca por cidade) ────
-            if bp == "CIDADE" and resultados:
-                origem = meta.get("origem", "cnpj")
-                label, cor, descricao = ORIGEM_CONFIG.get(origem, ("", "gray", ""))
-                escopo_desc = meta.get("escopo_descricao", "")
-                css_class = f"alert-{'escopo' if cor == 'purple' else 'multi' if cor == 'yellow' else 'retencao' if cor == 'red' else 'multi'}"
-                if descricao:
-                    st.markdown(f"""
-                    <div class="{css_class}">
-                        <b>{label}</b> — {descricao}<br>
-                        <span style="opacity:0.7; font-size:11px;">{escopo_desc}</span>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-            if not resultados:
-                st.error("Nenhuma combinação encontrada. Verifique o valor ou tente ajustar a tolerância.")
+        if executar:
+            if not identificador:
+                st.error("Informe o identificador de busca.")
             else:
-                if len(resultados) > 1:
-                    st.markdown(f"""
-                    <div class="alert-multi">
-                        ⚡ <b>{len(resultados)} composições distintas</b> encontradas.
-                        A combinação <b>#1</b> é a mais simples e financeiramente recomendada.
-                    </div>
-                    """, unsafe_allow_html=True)
+                try:
+                    valor = float(valor_str.replace(".", "").replace(",", "."))
+                except Exception:
+                    st.error("Valor alvo inválido. Use vírgula como decimal (ex: 31.452,88).")
+                    st.stop()
 
-                for i, combo in enumerate(resultados):
-                    exibir_combo(combo, i, len(resultados))
+                bp = busca_por.upper()
 
-else:
-    st.info("⬆️ Carregue a planilha de títulos vencidos para iniciar a conciliação.")
-    st.markdown("""
+                if bp == "CNPJ":
+                    limpo  = identificador.replace(".", "").replace("/", "").replace("-", "").lstrip("0")
+                    col_c  = "cnpj_limpo" if "cnpj_limpo" in df.columns else "cnpj"
+                    df_cli = df[df[col_c].str.lstrip("0") == limpo]
+                    escopo = "direto"
+
+                elif bp == "CIDADE":
+                    df_cli = df[df["cidade"].str.strip().str.upper() == identificador.strip().upper()]
+                    escopo = "cidade"
+
+                else:
+                    df_cli = df[df["nome"].str.strip().str.upper().str.contains(
+                        identificador.strip().upper(), na=False)]
+                    escopo = "direto"
+
+                if df_cli.empty:
+                    st.error(f"Nenhum registro encontrado para {busca_por}: **{identificador}**")
+                    st.stop()
+
+                with st.spinner(f"Buscando combinações em {len(df_cli)} nota(s)..."):
+                    resultados, meta = conciliar(df_cli, valor, escopo=escopo)
+
+                st.markdown("---")
+                s1, s2, s3, s4 = st.columns(4)
+                s1.markdown(f'<div class="stat-box"><div class="stat-label">Notas analisadas</div><div class="stat-value">{len(df_cli)}</div></div>', unsafe_allow_html=True)
+                s2.markdown(f'<div class="stat-box"><div class="stat-label">Combinações</div><div class="stat-value {"yellow" if len(resultados) > 1 else "green"}">{len(resultados)}</div></div>', unsafe_allow_html=True)
+                s3.markdown(f'<div class="stat-box"><div class="stat-label">Tempo</div><div class="stat-value">{meta["tempo_ms"]}ms</div></div>', unsafe_allow_html=True)
+                s4.markdown(f'<div class="stat-box"><div class="stat-label">Algoritmo</div><div class="stat-value" style="font-size:14px;">{meta.get("camada","—")}</div></div>', unsafe_allow_html=True)
+
+                st.markdown("<br>", unsafe_allow_html=True)
+
+                if bp == "CIDADE" and resultados:
+                    origem = meta.get("origem", "cnpj")
+                    label, cor, descricao = ORIGEM_CONFIG.get(origem, ("", "gray", ""))
+                    escopo_desc = meta.get("escopo_descricao", "")
+                    css_class = f"alert-{'escopo' if cor == 'purple' else 'multi' if cor == 'yellow' else 'retencao' if cor == 'red' else 'multi'}"
+                    if descricao:
+                        st.markdown(f"""
+                        <div class="{css_class}">
+                            <b>{label}</b> — {descricao}<br>
+                            <span style="opacity:0.7; font-size:11px;">{escopo_desc}</span>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                if not resultados:
+                    st.error("Nenhuma combinação encontrada. Verifique o valor ou tente ajustar a tolerância.")
+                else:
+                    if len(resultados) > 1:
+                        st.markdown(f"""
+                        <div class="alert-multi">
+                            ⚡ <b>{len(resultados)} composições distintas</b> encontradas.
+                            A combinação <b>#1</b> é a mais simples e financeiramente recomendada.
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                    for i, combo in enumerate(resultados):
+                        exibir_combo(combo, i, len(resultados))
+
+    else:
+        st.info("⬆️ Carregue a planilha de títulos vencidos para iniciar a conciliação.")
+        st.markdown("""
 **Como usar:**
 1. Faça o upload da planilha `.xlsx` com os títulos vencidos
 2. Selecione o tipo de busca (Cidade, CNPJ ou Nome)
@@ -688,4 +902,10 @@ else:
 - ✅ A composição de notas mais simples para o valor informado
 - ⚠️ Possíveis retenções indevidas de IR/ISS
 - ⚡ Múltiplas composições quando existirem
-    """)
+        """)
+
+# ══════════════════════════════════════════════════════════════
+# ABA 2 — CALCULADORA DE COMBINAÇÕES LIVRES
+# ══════════════════════════════════════════════════════════════
+with aba_calc:
+    aba_calculadora()
