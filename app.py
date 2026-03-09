@@ -593,14 +593,15 @@ def _buscar_combinacoes_livres(valores_lista, alvo, max_n, top):
     if not brutos:
         brutos.extend(solver_milp(valores, alvo, max_n))
 
-    # Deduplicar por índices
+    # Deduplicar por VALORES ordenados — evita mostrar a mesma composição
+    # de valores com índices diferentes (ex: dois 497,95 com idx 4 e 28)
     vistas, resultado = set(), []
     for dif, combo in brutos:
-        idx_set = frozenset(combo)
-        if idx_set in vistas:
+        parcelas = tuple(sorted(round(float(valores.get(k, 0)), 2) for k in combo))
+        if parcelas in vistas:
             continue
-        vistas.add(idx_set)
-        soma = round(sum(float(valores.get(k, 0)) for k in combo), 2)
+        vistas.add(parcelas)
+        soma = round(sum(parcelas), 2)
         resultado.append((dif, soma, sorted(combo, key=lambda x: int(x))))
 
     resultado.sort(key=lambda x: (x[0], len(x[2])))
