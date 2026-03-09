@@ -262,12 +262,16 @@ def _combo_sem_nf_duplicada(combo):
     return len(indices) == len(set(indices))
 
 def ranquear(brutos, valores, df_cli, alvo):
-    vistas, com_score = set(), []
+    # Deduplica por conjunto de ÍNDICES de nota (não por chave completa).
+    # Isso evita que a mesma combinação de NFs apareça várias vezes só porque
+    # uma delas usa "saldo_ir" num combo e "saldo_ir_iss" noutro.
+    # De cada grupo de combos com os mesmos índices, fica só o de menor diferença.
+    vistas_idx, com_score = set(), []
     for dif, combo in brutos:
-        if not _combo_sem_nf_duplicada(combo): continue   # ← correção
-        fs = frozenset(combo)
-        if fs in vistas: continue
-        vistas.add(fs)
+        if not _combo_sem_nf_duplicada(combo): continue
+        idx_set = frozenset(chave.split("|")[0] for chave in combo)
+        if idx_set in vistas_idx: continue
+        vistas_idx.add(idx_set)
         score = _score(combo, valores, df_cli, alvo)
         com_score.append((score, combo))
     com_score.sort(key=lambda x: x[0])
