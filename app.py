@@ -866,9 +866,174 @@ def aba_calculadora():
 
 
 
+# ============================================================
+# INTERFACE PRINCIPAL — com três abas
+# ============================================================
+
+st.markdown("""
+<div class="header-box">
+    <div style="display:flex; align-items:center; gap:16px;">
+        <div style="font-size:36px;">⚖️</div>
+        <div>
+            <div style="font-family:'IBM Plex Sans',sans-serif; font-weight:800;
+                 font-size:22px; letter-spacing:-0.02em; color:#f1f5f9;">
+                Motor de Conciliação Financeira
+            </div>
+            <div style="font-size:12px; color:#475569; letter-spacing:0.05em; margin-top:2px;">
+                MAXIFROTA — ANÁLISE DE TÍTULOS VENCIDOS
+            </div>
+        </div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+aba_conciliacao, aba_calc, aba_ret = st.tabs([
+    "⚖️  Conciliação com Planilha",
+    "🧮  Calculadora de Combinações",
+    "🎯  Liquidação por Retenção",
+])
+
+# ══════════════════════════════════════════════════════════════
+# ABA 1 — CONCILIAÇÃO COM PLANILHA
+# ══════════════════════════════════════════════════════════════
+with aba_conciliacao:
+
+    uploaded = st.file_uploader(
+        "📂 Carregar planilha de pendências",
+        type=["xlsx", "xls"],
+        help="Arraste o arquivo .xlsx com os títulos vencidos"
+    )
+
+    if uploaded:
+        with st.spinner("Lendo planilha..."):
+            df = carregar_planilha(uploaded.read(), uploaded.name)
+
+        col1, col2, col3 = st.columns(3)
+        col1.markdown(f'<div class="stat-box"><div class="stat-label">Arquivo</div><div class="stat-value" style="font-size:14px;">{uploaded.name}</div></div>', unsafe_allow_html=True)
+        col2.markdown(f'<div class="stat-box"><div class="stat-label">Títulos</div><div class="stat-value green">{len(df):,}</div></div>', unsafe_allow_html=True)
+        col3.markdown(f'<div class="stat-box"><div class="stat-label">Colunas mapeadas</div><div class="stat-value">{len([c for c in COLUNAS if c in df.columns])}/{len(COLUNAS)}</div></div>', unsafe_allow_html=True)
+
+        st.markdown("---")
+
+        c1, c2, c3, c4 = st.columns([1.2, 2, 1.8, 1])
+
+        with c1:
+            busca_por = st.selectbox("Buscar por", ["Cidade", "CNPJ", "Nome"], index=0)
+
+        with c2:
+            placeholder = {
+                "Cidade": "Ex: Abdon Batista",
+                "CNPJ":   "00.000.000/0001-00",
+                "Nome":   "Ex: Municipio de...",
+            }[busca_por]
+            identificador = st.text_input(busca_por, placeholder=placeholder)
+
+        with c3:
+            valor_str = st.text_input("Valor alvo (R$)", placeholder="Ex: 31.452,88")
+
+        with c4:
+            st.markdown("<br>", unsafe_allow_html=True)
+            executar = st.button("Conciliar →", use_container_width=True, type="primary")
+
+        if executar:
+            if not identificador:
+                st.error("Informe o identificador de busca.")
+            else:
+                try:
+                    valor = float(valor_str.replace(".", "").replace(",", "."))
+                except Exception:
+                    st.error("Valor alvo inválido. Use vírgula como decimal (ex: 31.452,88).")
+                    st.stop()
+
+                bp = busca_por.upper()
+
+                if bp == "CNPJ":
+                    limpo  = identificador.replace(".", "").replace("/", "").replace("-", "").lstrip("0")
+                    col_c  = "cnpj_limpo" if "cnpj_limpo" in df.columns else "cnpj"
+                    df_cli = df[df[col_c].str.lstrip("0") == limpo]
+                    escopo = "direto"
+
+                elif bp == "CIDADE":
+                    df_cli = df[df["cidade"].str.strip().str.upper() == identificador.strip().upper()]
+                    escopo = "cidade"
+
+                else:
+                    df_cli = df[df["nome"].str.strip().str.upper().str.contains(
+                        identificador.strip().upper(), na=False)]
+                    escopo = "direto"
+
+                if df_cli.empty:
+                    st.error(f"Nenhum registro encontrado para {busca_por}: **{identificador}**")
+                    st.stop()
+
+                with st.spinner(f"Buscando combinações em {len(df_cli)} nota(s)..."):
+                    resultados, meta = conciliar(df_cli, valor, escopo=escopo)
+
+                st.markdown("---")
+                s1, s2, s3, s4 = st.columns(4)
+                s1.markdown(f'<div class="stat-box"><div class="stat-label">Notas analisadas</div><div class="stat-value">{len(df_cli)}</div></div>', unsafe_allow_html=True)
+                s2.markdown(f'<div class="stat-box"><div class="stat-label">Combinações</div><div class="stat-value {"yellow" if len(resultados) > 1 else "green"}">{len(resultados)}</div></div>', unsafe_allow_html=True)
+                s3.markdown(f'<div class="stat-box"><div class="stat-label">Tempo</div><div class="stat-value">{meta["tempo_ms"]}ms</div></div>', unsafe_allow_html=True)
+                s4.markdown(f'<div class="stat-box"><div class="stat-label">Algoritmo</div><div class="stat-value" style="font-size:14px;">{meta.get("camada","—")}</div></div>', unsafe_allow_html=True)
+
+                st.markdown("<br>", unsafe_allow_html=True)
+
+                if bp == "CIDADE" and resultados:
+                    origem = meta.get("origem", "cnpj")
+                    label, cor, descricao = ORIGEM_CONFIG.get(origem, ("", "gray", ""))
+                    escopo_desc = meta.get("escopo_descricao", "")
+                    css_class = f"alert-{'escopo' if cor == 'purple' else 'multi' if cor == 'yellow' else 'retencao' if cor == 'red' else 'multi'}"
+                    if descricao:
+                        st.markdown(f"""
+                        <div class="{css_class}">
+                            <b>{label}</b> — {descricao}<br>
+                            <span style="opacity:0.7; font-size:11px;">{escopo_desc}</span>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                if not resultados:
+                    st.error("Nenhuma combinação encontrada. Verifique o valor ou tente ajustar a tolerância.")
+                else:
+                    if len(resultados) > 1:
+                        st.markdown(f"""
+                        <div class="alert-multi">
+                            ⚡ <b>{len(resultados)} composições distintas</b> encontradas.
+                            A combinação <b>#1</b> é a mais simples e financeiramente recomendada.
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                    for i, combo in enumerate(resultados):
+                        exibir_combo(combo, i, len(resultados))
+
+    else:
+        st.info("⬆️ Carregue a planilha de títulos vencidos para iniciar a conciliação.")
+        st.markdown("""
+**Como usar:**
+1. Faça o upload da planilha `.xlsx` com os títulos vencidos
+2. Selecione o tipo de busca (Cidade, CNPJ ou Nome)
+3. Digite o identificador do cliente
+4. Informe o valor recebido a conciliar
+5. Clique em **Conciliar →**
+
+**Busca por Cidade — cascata automática:**
+- 🎯 Tenta primeiro fechar o valor com um único CNPJ
+- 🔗 Se não achar, tenta dentro do mesmo grupo RBASE
+- ⚠️ Só abre para a cidade inteira se as anteriores falharem (com aviso)
+
+**O motor identifica automaticamente:**
+- ✅ A composição de notas mais simples para o valor informado
+- ⚠️ Possíveis retenções indevidas de IR/ISS
+- ⚡ Múltiplas composições quando existirem
+        """)
+
+# ══════════════════════════════════════════════════════════════
+# ABA 2 — CALCULADORA DE COMBINAÇÕES LIVRES
+# ══════════════════════════════════════════════════════════════
+with aba_calc:
+    aba_calculadora()
 
 # ============================================================
-# ABA 3 — ANÁLISE DE RETENÇÃO IR/ISS
+# ABA 3 — LIQUIDAÇÃO POR RETENÇÃO (funções auxiliares)
 # ============================================================
 
 @st.cache_data(show_spinner=False)
