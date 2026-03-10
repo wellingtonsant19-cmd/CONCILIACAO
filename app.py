@@ -151,27 +151,45 @@ def greedy(valores, alvo, max_notas):
     return None
 
 # ============================================================
-# ALGORITMO — CAMADA 3: MEET-IN-THE-MIDDLE
+# ALGORITMO — CAMADA 3: MEET-IN-THE-MIDDLE (adaptativo)
 # ============================================================
 
-def _somas_grupo(items, max_n):
-    dp = {0: [frozenset()]}
+def _somas_grupo(items, max_n, cap=None):
+    """
+    DP de somas com cap opcional de combinações por soma.
+    cap=None  → exato (comportamento original, para n pequeno)
+    cap=int   → bounded (limita memória, para n grande)
+    """
+    dp = {0: [()]}
     for chave, val in items:
-        for soma_atual in list(dp.keys()):
-            nova = soma_atual + val
-            novos = [fs | {chave} for fs in dp[soma_atual]
-                     if len(fs) < max_n and chave not in fs]
+        new_e = {}
+        for sa, combos in dp.items():
+            nv = sa + val
+            novos = [c + (chave,) for c in combos if len(c) < max_n]
             if novos:
-                if nova not in dp:
-                    dp[nova] = []
-                dp[nova].extend(novos)
+                if nv not in new_e: new_e[nv] = []
+                new_e[nv].extend(novos)
+        for nv, novos in new_e.items():
+            if nv not in dp:
+                dp[nv] = novos[:cap] if cap else novos
+            else:
+                merged = dp[nv] + novos
+                if cap and len(merged) > cap:
+                    merged.sort(key=len)
+                    merged = merged[:cap]
+                dp[nv] = merged
     return dp
 
 def meet_in_the_middle(valores, alvo, max_notas):
+    n = len(valores)
+    # Cap adaptativo: exato para ≤70 notas, bounded para mais
+    if   n <= 70:  cap = None   # exato
+    elif n <= 100: cap = 3      # ~1-2s
+    else:          cap = 2      # fallback rápido
+
     alvo_cents = round(round(alvo, 2) * 100)
     tol_cents  = round(TOLERANCIA * 100)
-    items = [(k, round(round(v, 2) * 100)) for k, v in valores.items()]
-    items = [(k, v) for k, v in items if v > 0]
+    items = [(k, round(round(v, 2) * 100)) for k, v in valores.items() if round(v, 2) > 0]
     if not items: return []
 
     mid   = len(items) // 2
@@ -179,8 +197,8 @@ def meet_in_the_middle(valores, alvo, max_notas):
     max_l = max(1, max_notas * len(left)  // len(items))
     max_r = max(1, max_notas * len(right) // len(items))
 
-    somas_l = _somas_grupo(left,  max_l)
-    somas_r = _somas_grupo(right, max_r)
+    somas_l = _somas_grupo(left,  max_l, cap)
+    somas_r = _somas_grupo(right, max_r, cap)
 
     resultados, vistas = [], set()
     for soma_l, combos_l in somas_l.items():
@@ -190,17 +208,46 @@ def meet_in_the_middle(valores, alvo, max_notas):
             if soma_r not in somas_r: continue
             for cl in combos_l:
                 for cr in somas_r[soma_r]:
-                    merged = cl | cr
-                    if len(merged) > max_notas: continue
-                    key = frozenset(merged)
-                    if key in vistas: continue
-                    vistas.add(key)
+                    merged = frozenset(cl + cr)
+                    if len(merged) > max_notas or merged in vistas: continue
+                    vistas.add(merged)
                     total = soma_l + soma_r
                     dif   = round(abs(alvo_cents - total) / 100, 2)
                     resultados.append((dif, tuple(sorted(merged))))
 
     resultados.sort(key=lambda x: (x[0], len(x[1])))
-    return resultados[:TOP_RESULTADOS]
+    return resultados[:TOP_RESULTADOS * 3]
+
+def fix1_busca(valores, alvo, max_notas):
+    """
+    Ancora cada nota grande (> alvo/max_notas) e roda MITM no restante.
+    Cobre combinações que o MITM top-100 poderia perder em bases grandes.
+    """
+    resultados = []
+    thr = alvo / max(max_notas, 1)
+    sd  = sorted(valores.items(), key=lambda x: x[1], reverse=True)
+    # Âncoras: notas entre alvo/max_notas e alvo, ordenadas pelo mais próximo do meio
+    ancoras = sorted([(k, v) for k, v in sd if thr < v < alvo - TOLERANCIA],
+                     key=lambda x: abs(x[1] - alvo / 2))
+    vistas = set()
+    for k1, v1 in ancoras:
+        resto = round(alvo - v1, 2)
+        sub = dict(sorted(
+            {k: v for k, v in valores.items() if k != k1 and 0 < v <= resto + TOLERANCIA}.items(),
+            key=lambda x: x[1], reverse=True
+        )[:50])
+        if not sub: continue
+        for _, combo in meet_in_the_middle(sub, resto, max_notas - 1)[:5]:
+            full = tuple(sorted((k1,) + combo))
+            key  = frozenset(full)
+            if key not in vistas:
+                vistas.add(key)
+                soma = round(v1 + sum(valores.get(k, 0) for k in combo), 2)
+                resultados.append((round(abs(soma - alvo), 2), full))
+        # Parar cedo se achou combinação exata
+        if resultados and resultados[0][0] <= TOLERANCIA:
+            break
+    return resultados
 
 # ============================================================
 # ALGORITMO — CAMADA 4: SOLVER MILP (fallback)
@@ -296,22 +343,34 @@ def buscar_combinacoes(valores_raw, alvo, df_cli, max_notas=MAX_NOTAS):
     valores = preprocessar(valores_raw, alvo)
     if not valores: return [], {}
 
+    n_filtradas = len(valores)
     brutos = []
+
+    # C1: Greedy (instantâneo)
     g = greedy(valores, alvo, max_notas)
     if g: brutos.append(g)
 
+    # C2: MITM (exato ≤70 notas, bounded acima)
     mitm = meet_in_the_middle(valores, alvo, max_notas)
     brutos.extend(mitm)
 
+    # C3: Fix-1 (ancora nota grande + MITM no restante) — para bases maiores
+    if n_filtradas > 50 and not (brutos and brutos[0][0] <= TOLERANCIA):
+        fix1 = fix1_busca(valores, alvo, max_notas)
+        brutos.extend(fix1)
+
+    # C4: MILP fallback (quando nada encontrou)
     if not brutos:
-        milp_res = solver_milp(valores, alvo, max_notas)
-        brutos.extend(milp_res)
+        brutos.extend(solver_milp(valores, alvo, max_notas))
 
-    if not brutos: return [], {"pre": len(valores), "camada": "Nenhuma"}
+    if not brutos: return [], {"pre": n_filtradas, "camada": "Nenhuma"}
 
-    camada = "Greedy" if g and not mitm else "Meet-in-the-Middle" if mitm else "MILP"
+    camada = ("Greedy"              if g and not mitm
+              else "MITM + Fix-1"   if mitm and n_filtradas > 50
+              else "Meet-in-the-Middle" if mitm
+              else "MILP")
     resultado = ranquear(brutos, valores, df_cli, alvo)
-    return resultado, {"pre": len(valores), "camada": camada}
+    return resultado, {"pre": n_filtradas, "camada": camada}
 
 def _montar_df_valores(df_sub):
     """Monta dicionário de valores para um subconjunto de notas."""
@@ -807,167 +866,165 @@ def aba_calculadora():
 
 
 
+
 # ============================================================
-# INTERFACE PRINCIPAL — com duas abas
+# ABA 3 — ANÁLISE DE RETENÇÃO IR/ISS
 # ============================================================
 
-st.markdown("""
-<div class="header-box">
-    <div style="display:flex; align-items:center; gap:16px;">
-        <div style="font-size:36px;">⚖️</div>
-        <div>
-            <div style="font-family:'IBM Plex Sans',sans-serif; font-weight:800;
-                 font-size:22px; letter-spacing:-0.02em; color:#f1f5f9;">
-                Motor de Conciliação Financeira
-            </div>
-            <div style="font-size:12px; color:#475569; letter-spacing:0.05em; margin-top:2px;">
-                MAXIFROTA — ANÁLISE DE TÍTULOS VENCIDOS
-            </div>
+@st.cache_data(show_spinner=False)
+def carregar_retencao(file_bytes, file_name):
+    """Lê planilha de títulos em aberto e normaliza colunas de retenção."""
+    import io
+    df = pd.read_excel(io.BytesIO(file_bytes))
+    df.columns = df.columns.str.strip()
+
+    # Mapear colunas com nomes alternativos
+    MAP = {
+        "NOME":          ["NOME", "NOME CLIENTE"],
+        "CNPJ":          ["CNPJ"],
+        "CIDADE":        ["CIDADE"],
+        "UF":            ["UF"],
+        "NF":            ["NF", "NR NFEM"],
+        "VLR SALDO":     ["VLR SALDO", "SALDO"],
+        "IR":            ["IR", "VLR RETIDO"],
+        "ISS":           ["ISS", "ISS RETIDO"],
+        "LIQ CORRETO":   ["LIQ CORRETO"],
+        "VENC":          ["VENC", "DT VENCIMENTO"],
+        "ATRASO":        ["ATRASO"],
+        "RBASE":         ["RBASE RAIZ", "RBASE"],
+    }
+    rename = {}
+    cols_up = {c.upper(): c for c in df.columns}
+    for dest, candidates in MAP.items():
+        for cand in candidates:
+            if cand.upper() in cols_up and dest not in df.columns:
+                rename[cols_up[cand.upper()]] = dest
+    df.rename(columns=rename, inplace=True)
+
+    for c in ["VLR SALDO", "IR", "ISS", "ATRASO"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).round(2)
+
+    # Calcular campos derivados
+    if "LIQ CORRETO" not in df.columns:
+        df["LIQ CORRETO"] = (df["VLR SALDO"] + df["IR"] + df["ISS"]).round(2)
+
+    df["RETENCAO_IR"]  = df["IR"].abs().round(2)
+    df["RETENCAO_ISS"] = df["ISS"].abs().round(2)
+    df["RETENCAO_TOT"] = (df["RETENCAO_IR"] + df["RETENCAO_ISS"]).round(2)
+    df["DIFERENCA"]    = (df["VLR SALDO"] - df["LIQ CORRETO"]).round(2)  # = RETENCAO_TOT
+
+    # Classificação
+    def classif(row):
+        if row["RETENCAO_IR"] > 0 and row["RETENCAO_ISS"] > 0:
+            return "IR + ISS"
+        elif row["RETENCAO_IR"] > 0:
+            return "IR"
+        elif row["RETENCAO_ISS"] > 0:
+            return "ISS"
+        return "Sem retenção"
+    df["TIPO_RETENCAO"] = df.apply(classif, axis=1)
+
+    if "CNPJ" in df.columns:
+        df["CNPJ"] = df["CNPJ"].astype(str).str.strip()
+
+    df.index = range(len(df))
+    return df
+
+
+def aba_retencao():
+    st.markdown("""
+    <div style="background:#0a1628; border:1px solid #1e293b; border-radius:12px;
+         padding:20px 24px; margin-bottom:24px;">
+        <div style="font-family:'IBM Plex Sans',sans-serif; font-weight:700;
+             font-size:15px; color:#e2e8f0; margin-bottom:6px;">
+            🎯 Notas Candidatas a Liquidação
+        </div>
+        <div style="font-size:12px; color:#64748b;">
+            Identifica notas fiscais onde o saldo em aberto é próximo do total retido (IR + ISS),
+            ou seja, a retenção cobre quase todo o valor — tornando viável a liquidação com mínimo ajuste.
         </div>
     </div>
-</div>
-""", unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
 
-aba_conciliacao, aba_calc = st.tabs([
-    "⚖️  Conciliação com Planilha",
-    "🧮  Calculadora de Combinações",
-])
-
-# ══════════════════════════════════════════════════════════════
-# ABA 1 — CONCILIAÇÃO COM PLANILHA
-# ══════════════════════════════════════════════════════════════
-with aba_conciliacao:
-
-    uploaded = st.file_uploader(
-        "📂 Carregar planilha de pendências",
-        type=["xlsx", "xls"],
-        help="Arraste o arquivo .xlsx com os títulos vencidos"
+    up = st.file_uploader(
+        "📂 Planilha de títulos em aberto (.xlsx)",
+        type=["xlsx","xls"],
+        key="ret_upload",
     )
 
-    if uploaded:
-        with st.spinner("Lendo planilha..."):
-            df = carregar_planilha(uploaded.read(), uploaded.name)
+    if not up:
+        st.info("⬆️ Carregue a planilha para identificar as notas candidatas à liquidação.")
+        return
 
-        col1, col2, col3 = st.columns(3)
-        col1.markdown(f'<div class="stat-box"><div class="stat-label">Arquivo</div><div class="stat-value" style="font-size:14px;">{uploaded.name}</div></div>', unsafe_allow_html=True)
-        col2.markdown(f'<div class="stat-box"><div class="stat-label">Títulos</div><div class="stat-value green">{len(df):,}</div></div>', unsafe_allow_html=True)
-        col3.markdown(f'<div class="stat-box"><div class="stat-label">Colunas mapeadas</div><div class="stat-value">{len([c for c in COLUNAS if c in df.columns])}/{len(COLUNAS)}</div></div>', unsafe_allow_html=True)
+    # ── Leitura ────────────────────────────────────────────────
+    df = pd.read_excel(up)
+    df.columns = df.columns.str.strip()
+    for c in ["VLR SALDO","IR","ISS"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).round(2)
 
-        st.markdown("---")
+    # ── Cálculo central ────────────────────────────────────────
+    # RETENCAO  = abs(IR) + abs(ISS)
+    # DIFERENÇA = abs(VLR SALDO − RETENCAO)
+    # → quanto falta (ou sobra) para a retenção cobrir o saldo inteiro
+    df["RETENCAO"] = (df["IR"].abs() + df["ISS"].abs()).round(2)
+    df["DIFERENÇA"] = (df["VLR SALDO"] - df["RETENCAO"]).abs().round(2)
 
-        c1, c2, c3, c4 = st.columns([1.2, 2, 1.8, 1])
+    # ── Controle de tolerância ─────────────────────────────────
+    tolerancia = st.slider(
+        "Tolerância máxima de diferença (R$)",
+        min_value=0.0, max_value=50.0, value=10.0, step=0.5,
+        format="R$ %.2f",
+        key="ret_tol",
+        help="Notas onde |Saldo − Retenção| ≤ este valor serão listadas."
+    )
 
-        with c1:
-            busca_por = st.selectbox("Buscar por", ["Cidade", "CNPJ", "Nome"], index=0)
+    df_cand = df[df["DIFERENÇA"] <= tolerancia].copy()
+    df_cand = df_cand.sort_values("DIFERENÇA")
 
-        with c2:
-            placeholder = {
-                "Cidade": "Ex: Abdon Batista",
-                "CNPJ":   "00.000.000/0001-00",
-                "Nome":   "Ex: Municipio de...",
-            }[busca_por]
-            identificador = st.text_input(busca_por, placeholder=placeholder)
+    # ── Métricas ───────────────────────────────────────────────
+    st.markdown("---")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.markdown(
+        f'<div class="stat-box"><div class="stat-label">Notas candidatas</div>'        f'<div class="stat-value green">{len(df_cand):,}</div></div>',
+        unsafe_allow_html=True)
+    m2.markdown(
+        f'<div class="stat-box"><div class="stat-label">Total saldo a liquidar</div>'        f'<div class="stat-value" style="font-size:13px;">{brl(df_cand["VLR SALDO"].sum())}</div></div>',
+        unsafe_allow_html=True)
+    m3.markdown(
+        f'<div class="stat-box"><div class="stat-label">Total retido nessas NFs</div>'        f'<div class="stat-value" style="font-size:13px;">{brl(df_cand["RETENCAO"].sum())}</div></div>',
+        unsafe_allow_html=True)
+    m4.markdown(
+        f'<div class="stat-box"><div class="stat-label">Ajuste total necessário</div>'        f'<div class="stat-value yellow" style="font-size:13px;">{brl(df_cand["DIFERENÇA"].sum())}</div></div>',
+        unsafe_allow_html=True)
 
-        with c3:
-            valor_str = st.text_input("Valor alvo (R$)", placeholder="Ex: 31.452,88")
+    st.markdown("<br>", unsafe_allow_html=True)
 
-        with c4:
-            st.markdown("<br>", unsafe_allow_html=True)
-            executar = st.button("Conciliar →", use_container_width=True, type="primary")
+    if df_cand.empty:
+        st.warning(f"Nenhuma nota com diferença ≤ R$ {tolerancia:.2f} encontrada.")
+        return
 
-        if executar:
-            if not identificador:
-                st.error("Informe o identificador de busca.")
-            else:
-                try:
-                    valor = float(valor_str.replace(".", "").replace(",", "."))
-                except Exception:
-                    st.error("Valor alvo inválido. Use vírgula como decimal (ex: 31.452,88).")
-                    st.stop()
+    # ── Tabela ─────────────────────────────────────────────────
+    cols_base = [c for c in ["NF","NOME","CIDADE","VLR SALDO","IR","ISS","RETENCAO","DIFERENÇA"] if c in df_cand.columns]
+    df_exib = df_cand[cols_base].copy()
 
-                bp = busca_por.upper()
+    if "NF" in df_exib.columns:
+        df_exib["NF"] = df_exib["NF"].apply(
+            lambda x: str(int(x)) if pd.notna(x) and str(x) not in ("nan","") else "")
 
-                if bp == "CNPJ":
-                    limpo  = identificador.replace(".", "").replace("/", "").replace("-", "").lstrip("0")
-                    col_c  = "cnpj_limpo" if "cnpj_limpo" in df.columns else "cnpj"
-                    df_cli = df[df[col_c].str.lstrip("0") == limpo]
-                    escopo = "direto"
+    for col in ["VLR SALDO","IR","ISS","RETENCAO","DIFERENÇA"]:
+        if col in df_exib.columns:
+            df_exib[col] = df_exib[col].apply(brl)
 
-                elif bp == "CIDADE":
-                    df_cli = df[df["cidade"].str.strip().str.upper() == identificador.strip().upper()]
-                    escopo = "cidade"
-
-                else:
-                    df_cli = df[df["nome"].str.strip().str.upper().str.contains(
-                        identificador.strip().upper(), na=False)]
-                    escopo = "direto"
-
-                if df_cli.empty:
-                    st.error(f"Nenhum registro encontrado para {busca_por}: **{identificador}**")
-                    st.stop()
-
-                with st.spinner(f"Buscando combinações em {len(df_cli)} nota(s)..."):
-                    resultados, meta = conciliar(df_cli, valor, escopo=escopo)
-
-                st.markdown("---")
-                s1, s2, s3, s4 = st.columns(4)
-                s1.markdown(f'<div class="stat-box"><div class="stat-label">Notas analisadas</div><div class="stat-value">{len(df_cli)}</div></div>', unsafe_allow_html=True)
-                s2.markdown(f'<div class="stat-box"><div class="stat-label">Combinações</div><div class="stat-value {"yellow" if len(resultados) > 1 else "green"}">{len(resultados)}</div></div>', unsafe_allow_html=True)
-                s3.markdown(f'<div class="stat-box"><div class="stat-label">Tempo</div><div class="stat-value">{meta["tempo_ms"]}ms</div></div>', unsafe_allow_html=True)
-                s4.markdown(f'<div class="stat-box"><div class="stat-label">Algoritmo</div><div class="stat-value" style="font-size:14px;">{meta.get("camada","—")}</div></div>', unsafe_allow_html=True)
-
-                st.markdown("<br>", unsafe_allow_html=True)
-
-                if bp == "CIDADE" and resultados:
-                    origem = meta.get("origem", "cnpj")
-                    label, cor, descricao = ORIGEM_CONFIG.get(origem, ("", "gray", ""))
-                    escopo_desc = meta.get("escopo_descricao", "")
-                    css_class = f"alert-{'escopo' if cor == 'purple' else 'multi' if cor == 'yellow' else 'retencao' if cor == 'red' else 'multi'}"
-                    if descricao:
-                        st.markdown(f"""
-                        <div class="{css_class}">
-                            <b>{label}</b> — {descricao}<br>
-                            <span style="opacity:0.7; font-size:11px;">{escopo_desc}</span>
-                        </div>
-                        """, unsafe_allow_html=True)
-
-                if not resultados:
-                    st.error("Nenhuma combinação encontrada. Verifique o valor ou tente ajustar a tolerância.")
-                else:
-                    if len(resultados) > 1:
-                        st.markdown(f"""
-                        <div class="alert-multi">
-                            ⚡ <b>{len(resultados)} composições distintas</b> encontradas.
-                            A combinação <b>#1</b> é a mais simples e financeiramente recomendada.
-                        </div>
-                        """, unsafe_allow_html=True)
-
-                    for i, combo in enumerate(resultados):
-                        exibir_combo(combo, i, len(resultados))
-
-    else:
-        st.info("⬆️ Carregue a planilha de títulos vencidos para iniciar a conciliação.")
-        st.markdown("""
-**Como usar:**
-1. Faça o upload da planilha `.xlsx` com os títulos vencidos
-2. Selecione o tipo de busca (Cidade, CNPJ ou Nome)
-3. Digite o identificador do cliente
-4. Informe o valor recebido a conciliar
-5. Clique em **Conciliar →**
-
-**Busca por Cidade — cascata automática:**
-- 🎯 Tenta primeiro fechar o valor com um único CNPJ
-- 🔗 Se não achar, tenta dentro do mesmo grupo RBASE
-- ⚠️ Só abre para a cidade inteira se as anteriores falharem (com aviso)
-
-**O motor identifica automaticamente:**
-- ✅ A composição de notas mais simples para o valor informado
-- ⚠️ Possíveis retenções indevidas de IR/ISS
-- ⚡ Múltiplas composições quando existirem
-        """)
+    st.markdown(
+        f"**{len(df_exib):,} nota(s)** onde a retenção cobre o saldo com diferença de até **{brl(tolerancia)}**"
+        f" — ordenadas da menor para a maior diferença:",
+        unsafe_allow_html=True,
+    )
+    st.dataframe(df_exib, use_container_width=True, hide_index=True, height=520)
 
 # ══════════════════════════════════════════════════════════════
-# ABA 2 — CALCULADORA DE COMBINAÇÕES LIVRES
+# ABA 3 — NOTAS CANDIDATAS A LIQUIDAÇÃO
 # ══════════════════════════════════════════════════════════════
-with aba_calc:
-    aba_calculadora()
+with aba_ret:
+    aba_retencao()
