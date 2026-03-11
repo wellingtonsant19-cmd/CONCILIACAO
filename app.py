@@ -1226,21 +1226,12 @@ def aba_retencao():
     # ── Export Excel ───────────────────────────────────────────
     import io as _io
     buf = _io.BytesIO()
-    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
-        df_export.rename(columns={
-            "VLR SALDO": "Saldo", "RETENCAO": "Total Retido",
-            "DIFERENÇA": "Diferença", "VENC": "Vencimento", "ATRASO": "Atraso (dias)"
-        }, inplace=True)
+    df_export.rename(columns={
+        "VLR SALDO": "Saldo", "RETENCAO": "Total Retido",
+        "DIFERENÇA": "Diferença", "VENC": "Vencimento", "ATRASO": "Atraso (dias)"
+    }, inplace=True)
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         df_export.to_excel(writer, index=False, sheet_name="Liquidação Retenção")
-        wb  = writer.book
-        ws  = writer.sheets["Liquidação Retenção"]
-        fmt_brl  = wb.add_format({"num_format": "R$ #,##0.00", "align": "right"})
-        fmt_head = wb.add_format({"bold": True, "bg_color": "#0a1628", "font_color": "#e2e8f0", "border": 1})
-        for col_idx, col_name in enumerate(df_export.columns):
-            ws.set_column(col_idx, col_idx, max(18, len(str(col_name))+4))
-            if col_name in ("Saldo","IR","ISS","Total Retido","Diferença"):
-                ws.set_column(col_idx, col_idx, 18, fmt_brl)
-            ws.write(0, col_idx, col_name, fmt_head)
     buf.seek(0)
 
     st.download_button(
