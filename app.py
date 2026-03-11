@@ -1123,19 +1123,34 @@ def aba_retencao():
         st.info("⬆️ Carregue a planilha para identificar as notas candidatas à liquidação.")
         return
 
-    # ── Leitura ────────────────────────────────────────────────
+    # ── Leitura e normalização ─────────────────────────────────
     df = pd.read_excel(up)
     df.columns = df.columns.str.strip()
 
-    # Normalizar colunas — aceita nome novo e antigo
-    rename_map = {}
+    # Mapa de colunas: aceita nome novo e antigo
+    MAPA_RET = {
+        "NF":        ["NF", "NR NFEM"],
+        "NOME":      ["NOME CLIENTE", "NOME"],
+        "CIDADE":    ["CIDADE"],
+        "CNPJ":      ["CNPJ"],
+        "VLR SALDO": ["SALDO", "VLR SALDO"],
+        "IR":        ["IR", "VLR RETIDO"],
+        "ISS":       ["ISS", "ISS RETIDO"],
+        "VENC":      ["VENCIMENTO", "VENC", "DT VENCIMENTO"],
+        "ATRASO":    ["ATRASO"],
+    }
     cols_up = {c.upper(): c for c in df.columns}
-    for novo, antigo in [("VLR SALDO", "SALDO"), ("NOME", "NOME CLIENTE")]:
-        if novo.upper() not in cols_up and antigo.upper() in cols_up:
-            rename_map[cols_up[antigo.upper()]] = novo
+    rename_map = {}
+    for destino, candidatos in MAPA_RET.items():
+        if destino not in df.columns:
+            for cand in candidatos:
+                if cand.upper() in cols_up:
+                    rename_map[cols_up[cand.upper()]] = destino
+                    break
     if rename_map:
         df.rename(columns=rename_map, inplace=True)
 
+    # Garantir colunas numéricas
     for c in ["VLR SALDO","IR","ISS"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).round(2)
@@ -1143,10 +1158,12 @@ def aba_retencao():
             df[c] = 0.0
 
     # ── Cálculo central ────────────────────────────────────────
-    # RETENCAO  = abs(IR) + abs(ISS)
-    # DIFERENÇA = abs(VLR SALDO − RETENCAO)
-    # → quanto falta (ou sobra) para a retenção cobrir o saldo inteiro
+    # Remover linhas sem saldo (evita zeros/None poluírem o resultado)
+    df = df[df["VLR SALDO"] > 0].copy()
+
     df["RETENCAO"] = (df["IR"].abs() + df["ISS"].abs()).round(2)
+    # Só faz sentido considerar notas que TÊM alguma retenção
+    df = df[df["RETENCAO"] > 0].copy()
     df["DIFERENÇA"] = (df["VLR SALDO"] - df["RETENCAO"]).abs().round(2)
 
     # ── Controle de tolerância ─────────────────────────────────
@@ -1164,18 +1181,10 @@ def aba_retencao():
     # ── Métricas ───────────────────────────────────────────────
     st.markdown("---")
     m1, m2, m3, m4 = st.columns(4)
-    m1.markdown(
-        f'<div class="stat-box"><div class="stat-label">Notas candidatas</div>'        f'<div class="stat-value green">{len(df_cand):,}</div></div>',
-        unsafe_allow_html=True)
-    m2.markdown(
-        f'<div class="stat-box"><div class="stat-label">Total saldo a liquidar</div>'        f'<div class="stat-value" style="font-size:13px;">{brl(df_cand["VLR SALDO"].sum())}</div></div>',
-        unsafe_allow_html=True)
-    m3.markdown(
-        f'<div class="stat-box"><div class="stat-label">Total retido nessas NFs</div>'        f'<div class="stat-value" style="font-size:13px;">{brl(df_cand["RETENCAO"].sum())}</div></div>',
-        unsafe_allow_html=True)
-    m4.markdown(
-        f'<div class="stat-box"><div class="stat-label">Ajuste total necessário</div>'        f'<div class="stat-value yellow" style="font-size:13px;">{brl(df_cand["DIFERENÇA"].sum())}</div></div>',
-        unsafe_allow_html=True)
+    m1.markdown(f'<div class="stat-box"><div class="stat-label">Notas candidatas</div><div class="stat-value green">{len(df_cand):,}</div></div>', unsafe_allow_html=True)
+    m2.markdown(f'<div class="stat-box"><div class="stat-label">Total saldo a liquidar</div><div class="stat-value" style="font-size:13px;">{brl(df_cand["VLR SALDO"].sum())}</div></div>', unsafe_allow_html=True)
+    m3.markdown(f'<div class="stat-box"><div class="stat-label">Total retido nessas NFs</div><div class="stat-value" style="font-size:13px;">{brl(df_cand["RETENCAO"].sum())}</div></div>', unsafe_allow_html=True)
+    m4.markdown(f'<div class="stat-box"><div class="stat-label">Ajuste total necessário</div><div class="stat-value yellow" style="font-size:13px;">{brl(df_cand["DIFERENÇA"].sum())}</div></div>', unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -1183,24 +1192,64 @@ def aba_retencao():
         st.warning(f"Nenhuma nota com diferença ≤ R$ {tolerancia:.2f} encontrada.")
         return
 
-    # ── Tabela ─────────────────────────────────────────────────
-    cols_base = [c for c in ["NF","NOME","CIDADE","VLR SALDO","IR","ISS","RETENCAO","DIFERENÇA"] if c in df_cand.columns]
-    df_exib = df_cand[cols_base].copy()
+    # ── Tabela de exibição (só colunas que existem) ────────────
+    COLS_EXIB = ["NF","NOME","CIDADE","VLR SALDO","IR","ISS","RETENCAO","DIFERENÇA","VENC","ATRASO"]
+    cols_ok = [c for c in COLS_EXIB if c in df_cand.columns]
+    df_exib = df_cand[cols_ok].copy()
 
+    # Formatar NF como inteiro
     if "NF" in df_exib.columns:
         df_exib["NF"] = df_exib["NF"].apply(
-            lambda x: str(int(x)) if pd.notna(x) and str(x) not in ("nan","") else "")
+            lambda x: str(int(float(x))) if pd.notna(x) and str(x) not in ("nan","None","") else "")
 
+    # Guardar versão numérica para export antes de formatar
+    df_export = df_exib.copy()
+
+    # Formatar monetários para exibição
     for col in ["VLR SALDO","IR","ISS","RETENCAO","DIFERENÇA"]:
         if col in df_exib.columns:
-            df_exib[col] = df_exib[col].apply(brl)
+            df_exib[col] = df_exib[col].apply(lambda v: brl(v) if pd.notna(v) else "")
+
+    # Renomear para exibição
+    df_exib.rename(columns={
+        "VLR SALDO": "Saldo", "RETENCAO": "Total Retido",
+        "DIFERENÇA": "Diferença", "VENC": "Vencimento", "ATRASO": "Atraso (dias)"
+    }, inplace=True)
 
     st.markdown(
         f"**{len(df_exib):,} nota(s)** onde a retenção cobre o saldo com diferença de até **{brl(tolerancia)}**"
         f" — ordenadas da menor para a maior diferença:",
         unsafe_allow_html=True,
     )
-    st.dataframe(df_exib, use_container_width=True, hide_index=True, height=520)
+    st.dataframe(df_exib, use_container_width=True, hide_index=True, height=480)
+
+    # ── Export Excel ───────────────────────────────────────────
+    import io as _io
+    buf = _io.BytesIO()
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+        df_export.rename(columns={
+            "VLR SALDO": "Saldo", "RETENCAO": "Total Retido",
+            "DIFERENÇA": "Diferença", "VENC": "Vencimento", "ATRASO": "Atraso (dias)"
+        }, inplace=True)
+        df_export.to_excel(writer, index=False, sheet_name="Liquidação Retenção")
+        wb  = writer.book
+        ws  = writer.sheets["Liquidação Retenção"]
+        fmt_brl  = wb.add_format({"num_format": "R$ #,##0.00", "align": "right"})
+        fmt_head = wb.add_format({"bold": True, "bg_color": "#0a1628", "font_color": "#e2e8f0", "border": 1})
+        for col_idx, col_name in enumerate(df_export.columns):
+            ws.set_column(col_idx, col_idx, max(18, len(str(col_name))+4))
+            if col_name in ("Saldo","IR","ISS","Total Retido","Diferença"):
+                ws.set_column(col_idx, col_idx, 18, fmt_brl)
+            ws.write(0, col_idx, col_name, fmt_head)
+    buf.seek(0)
+
+    st.download_button(
+        label="⬇️ Exportar para Excel",
+        data=buf,
+        file_name="liquidacao_retencao.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
 
 # ══════════════════════════════════════════════════════════════
 # ABA 3 — NOTAS CANDIDATAS A LIQUIDAÇÃO
