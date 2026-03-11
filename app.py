@@ -84,18 +84,18 @@ TOP_RESULTADOS = 10
 # ============================================================
 
 COLUNAS = {
-    "nome":         ["NOME"],
+    "nome":         ["NOME CLIENTE", "NOME"],
     "cnpj":         ["CNPJ"],
     "cidade":       ["CIDADE"],
     "uf":           ["UF"],
-    "nf":           ["NF"],
-    "num_doc":      ["NUM DOC MATERA"],
+    "nf":           ["NF", "NR NFEM"],
+    "num_doc":      ["DOC", "NUM DOC MATERA"],
     "rbase":        ["RBASE RAIZ", "RBASE"],
-    "valor_titulo": ["VLR TITULO", "VALOR TITULO"],
-    "saldo":        ["VLR SALDO", "VALOR SALDO"],
-    "ir":           ["IR"],
-    "iss":          ["ISS"],
-    "venc":         ["VENC"],
+    "valor_titulo": ["BRUTO", "VLR TITULO", "VALOR TITULO"],
+    "saldo":        ["SALDO", "VLR SALDO", "VALOR SALDO"],
+    "ir":           ["IR", "VLR RETIDO"],
+    "iss":          ["ISS", "ISS RETIDO"],
+    "venc":         ["VENCIMENTO", "VENC", "DT VENCIMENTO"],
     "atraso":       ["ATRASO"],
 }
 
@@ -887,10 +887,11 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-aba_conciliacao, aba_calc, aba_ret = st.tabs([
+aba_conciliacao, aba_calc, aba_ret, aba_itau = st.tabs([
     "⚖️  Conciliação com Planilha",
     "🧮  Calculadora de Combinações",
     "🎯  Liquidação por Retenção",
+    "🏦  Conciliação Itaú",
 ])
 
 # ══════════════════════════════════════════════════════════════
@@ -1050,11 +1051,11 @@ def carregar_retencao(file_bytes, file_name):
         "CIDADE":        ["CIDADE"],
         "UF":            ["UF"],
         "NF":            ["NF", "NR NFEM"],
-        "VLR SALDO":     ["VLR SALDO", "SALDO"],
+        "VLR SALDO":     ["SALDO", "VLR SALDO"],
         "IR":            ["IR", "VLR RETIDO"],
         "ISS":           ["ISS", "ISS RETIDO"],
-        "LIQ CORRETO":   ["LIQ CORRETO"],
-        "VENC":          ["VENC", "DT VENCIMENTO"],
+        "LIQ CORRETO":   ["CORRETO", "LIQ CORRETO"],
+        "VENC":          ["VENCIMENTO", "VENC", "DT VENCIMENTO"],
         "ATRASO":        ["ATRASO"],
         "RBASE":         ["RBASE RAIZ", "RBASE"],
     }
@@ -1066,7 +1067,7 @@ def carregar_retencao(file_bytes, file_name):
                 rename[cols_up[cand.upper()]] = dest
     df.rename(columns=rename, inplace=True)
 
-    for c in ["VLR SALDO", "IR", "ISS", "ATRASO"]:
+    for c in ["VLR SALDO", "IR", "ISS", "ATRASO"]:  # já renomeado pelo MAP acima
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).round(2)
 
@@ -1125,8 +1126,21 @@ def aba_retencao():
     # ── Leitura ────────────────────────────────────────────────
     df = pd.read_excel(up)
     df.columns = df.columns.str.strip()
+
+    # Normalizar colunas — aceita nome novo e antigo
+    rename_map = {}
+    cols_up = {c.upper(): c for c in df.columns}
+    for novo, antigo in [("VLR SALDO", "SALDO"), ("NOME", "NOME CLIENTE")]:
+        if novo.upper() not in cols_up and antigo.upper() in cols_up:
+            rename_map[cols_up[antigo.upper()]] = novo
+    if rename_map:
+        df.rename(columns=rename_map, inplace=True)
+
     for c in ["VLR SALDO","IR","ISS"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).round(2)
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).round(2)
+        else:
+            df[c] = 0.0
 
     # ── Cálculo central ────────────────────────────────────────
     # RETENCAO  = abs(IR) + abs(ISS)
@@ -1193,3 +1207,254 @@ def aba_retencao():
 # ══════════════════════════════════════════════════════════════
 with aba_ret:
     aba_retencao()
+
+# ============================================================
+# ABA 4 — CONCILIAÇÃO BANCÁRIA ITAÚ (PDF × CSV)
+# ============================================================
+
+def extrair_liquidacoes_pdf(file_bytes):
+    """Extrai registros de liquidação do PDF do Itaú."""
+    try:
+        import pdfplumber
+    except ImportError:
+        import subprocess, sys
+        subprocess.check_call([sys.executable, "-m", "pip", "install",
+                               "pdfplumber", "--break-system-packages", "-q"])
+        import pdfplumber
+    import io, re
+
+    COL_SEU_NUM_MIN    = 280
+    COL_SEU_NUM_MAX    = 360
+    COL_TIPO_MIN       = 195
+    COL_TIPO_MAX       = 240
+    COL_OPERACAO_MIN   = 620
+    COL_OPERACAO_MAX   = 760
+    COL_VALOR_FINAL_MIN = 760
+    COL_VALOR_FINAL_MAX = 850
+    COL_JUROS_VAL_MIN   = 695
+    HEADER_Y_MAX = 150
+
+    def parse_val(t):
+        return float(t.replace('.','').replace(',','.'))
+
+    registros = []
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        for num_pag, page in enumerate(pdf.pages, start=1):
+            words = page.extract_words()
+            linhas = {}
+            for w in words:
+                y = round(w['top'] / 2) * 2
+                linhas.setdefault(y, []).append(w)
+
+            ultimo = None
+            for y in sorted(linhas.keys()):
+                if y < HEADER_Y_MAX:
+                    continue
+                palavras = linhas[y]
+                textos = [w['text'] for w in palavras]
+
+                # Linha de juros
+                if 'juros' in textos and ultimo is not None:
+                    for w in palavras:
+                        if w['x0'] > COL_JUROS_VAL_MIN and w['text'] != 'juros':
+                            try:
+                                ultimo['juros'] += parse_val(w['text'])
+                            except ValueError:
+                                pass
+                    continue
+
+                seu_num = operacao = valor_final = valor_inicial = None
+                pagador_words = []
+
+                for w in palavras:
+                    x, t = w['x0'], w['text']
+                    if COL_SEU_NUM_MIN <= x <= COL_SEU_NUM_MAX and re.match(r'^\d{9,10}$', t):
+                        seu_num = t
+                    if COL_OPERACAO_MIN <= x <= COL_OPERACAO_MAX and t not in ('----',):
+                        operacao = t
+                    if x >= COL_VALOR_FINAL_MIN and re.match(r'^[\d.,]+$', t) and t != '----':
+                        try:
+                            valor_final = parse_val(t)
+                        except ValueError:
+                            pass
+                    if 45 <= x <= 195:
+                        pagador_words.append(t)
+
+                if seu_num and operacao == 'liquidação' and valor_final is not None:
+                    reg = {
+                        'seu_num':     seu_num,
+                        'pagador':     ' '.join(pagador_words),
+                        'valor_final': valor_final,
+                        'juros':       0.0,
+                        'pagina':      num_pag,
+                    }
+                    for w in palavras:
+                        if 460 <= w['x0'] <= 600 and re.match(r'^[\d.,]+$', w['text']):
+                            try:
+                                reg['valor_inicial'] = parse_val(w['text'])
+                            except ValueError:
+                                pass
+                    if 'valor_inicial' not in reg:
+                        reg['valor_inicial'] = None
+                    registros.append(reg)
+                    ultimo = reg
+                else:
+                    if not (seu_num and operacao):
+                        ultimo = None
+    return registros
+
+
+def ler_csv_itau(file_bytes):
+    """Lê o CSV do sistema Itaú (separador ;)."""
+    import csv, io
+    dados = {}
+    text = file_bytes.decode('utf-8', errors='replace')
+    reader = csv.DictReader(io.StringIO(text), delimiter=';')
+    for row in reader:
+        doc = row.get('NUM_DOCUMENTO','').strip().strip('"')
+        if not doc:
+            continue
+        def pv(k):
+            try:
+                return float(row.get(k,'0').strip().strip('"').replace('.','').replace(',','.'))
+            except:
+                return 0.0
+        dados[doc] = {
+            'nome':     row.get('NOME','').strip().strip('"'),
+            'parcela':  pv('VLR_PARCELA_MOEDA_CORRENTE'),
+            'recebido': pv('VLR_RECEB_MOEDA_CORRENTE'),
+        }
+    return dados
+
+
+def aba_itau():
+    st.markdown("""
+    <div style="background:#0a1628; border:1px solid #1e293b; border-radius:12px;
+         padding:20px 24px; margin-bottom:24px;">
+        <div style="font-family:'IBM Plex Sans',sans-serif; font-weight:700;
+             font-size:15px; color:#e2e8f0; margin-bottom:6px;">
+            🏦 Conciliação Bancária Itaú — PDF × CSV
+        </div>
+        <div style="font-size:12px; color:#64748b;">
+            Compara o extrato de cobrança do Itaú (PDF) com os recebimentos do sistema (CSV)
+            e identifica boletos não lançados e diferenças de valor por juros/mora.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_pdf, col_csv = st.columns(2)
+    with col_pdf:
+        up_pdf = st.file_uploader("📄 Extrato Itaú (.pdf)", type=["pdf"], key="itau_pdf")
+    with col_csv:
+        up_csv = st.file_uploader("📋 Recebimentos do sistema (.csv)", type=["csv"], key="itau_csv")
+
+    if not up_pdf or not up_csv:
+        st.info("⬆️ Carregue o PDF do banco e o CSV do sistema para iniciar a conciliação.")
+        return
+
+    with st.spinner("Lendo PDF do Itaú..."):
+        try:
+            pdf_regs = extrair_liquidacoes_pdf(up_pdf.read())
+        except Exception as e:
+            st.error(f"Erro ao ler PDF: {e}")
+            return
+
+    with st.spinner("Lendo CSV do sistema..."):
+        try:
+            csv_dados = ler_csv_itau(up_csv.read())
+        except Exception as e:
+            st.error(f"Erro ao ler CSV: {e}")
+            return
+
+    if not pdf_regs:
+        st.warning("Nenhuma liquidação encontrada no PDF. Verifique se o arquivo é o extrato de cobrança Itaú correto.")
+        return
+
+    # ── Calcular resultados ────────────────────────────────────
+    faltantes  = [r for r in pdf_regs if r['seu_num'] not in csv_dados]
+    diferencas = []
+    for r in pdf_regs:
+        if r['seu_num'] in csv_dados:
+            diff = round(r['valor_final'] - csv_dados[r['seu_num']]['recebido'], 2)
+            if abs(diff) > 0.009:
+                diferencas.append({**r,
+                    'csv_recebido': csv_dados[r['seu_num']]['recebido'],
+                    'diff': diff})
+
+    total_pdf       = round(sum(r['valor_final'] for r in pdf_regs), 2)
+    total_csv       = round(sum(v['recebido'] for v in csv_dados.values()), 2)
+    total_faltantes = round(sum(r['valor_final'] for r in faltantes), 2)
+    total_diff      = round(sum(d['diff'] for d in diferencas), 2)
+    gap_total       = round(total_pdf - total_csv, 2)
+
+    # ── Cards de resumo ────────────────────────────────────────
+    st.markdown("---")
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.markdown(f'<div class="stat-box"><div class="stat-label">Liquidações PDF</div><div class="stat-value">{len(pdf_regs):,}</div></div>', unsafe_allow_html=True)
+    m2.markdown(f'<div class="stat-box"><div class="stat-label">Registros CSV</div><div class="stat-value">{len(csv_dados):,}</div></div>', unsafe_allow_html=True)
+    m3.markdown(f'<div class="stat-box"><div class="stat-label">Não lançados</div><div class="stat-value {"red" if faltantes else "green"}">{len(faltantes):,}</div></div>', unsafe_allow_html=True)
+    m4.markdown(f'<div class="stat-box"><div class="stat-label">Com diferença</div><div class="stat-value {"yellow" if diferencas else "green"}">{len(diferencas):,}</div></div>', unsafe_allow_html=True)
+    m5.markdown(f'<div class="stat-box"><div class="stat-label">GAP Total</div><div class="stat-value {"red" if abs(gap_total)>0.01 else "green"}" style="font-size:13px;">{brl(gap_total)}</div></div>', unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Seção 1: Faltantes ─────────────────────────────────────
+    st.markdown("### 1 · Liquidações no banco não encontradas no sistema")
+    if faltantes:
+        st.markdown(
+            f'<div class="alert-retencao">⚠️ <b>{len(faltantes)} boleto(s)</b> liquidados pelo banco '
+            f'não estão no CSV do sistema — total de <b>{brl(total_faltantes)}</b> não lançado.</div>',
+            unsafe_allow_html=True)
+        df_falt = pd.DataFrame([{
+            "Seu Número":    r['seu_num'],
+            "Pagador":       r['pagador'],
+            "Vlr Inicial":   brl(r['valor_inicial']) if r['valor_inicial'] else "—",
+            "Vlr Final":     brl(r['valor_final']),
+            "Juros":         brl(r['juros']) if r['juros'] > 0 else "—",
+            "Página PDF":    r['pagina'],
+        } for r in faltantes])
+        st.dataframe(df_falt, use_container_width=True, hide_index=True)
+        st.markdown(f"**Total não lançado: {brl(total_faltantes)}**")
+    else:
+        st.success("✔ Nenhum boleto faltante — todos os registros do PDF estão no sistema.")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Seção 2: Diferenças de valor ──────────────────────────
+    st.markdown("### 2 · Diferenças de valor entre banco e sistema (juros/mora)")
+    if diferencas:
+        st.markdown(
+            f'<div class="alert-multi">⚡ <b>{len(diferencas)} registro(s)</b> com valor diferente '
+            f'entre o banco e o sistema — diferença total de <b>{brl(total_diff)}</b>.</div>',
+            unsafe_allow_html=True)
+        df_diff = pd.DataFrame([{
+            "Seu Número":   d['seu_num'],
+            "Pagador":      d['pagador'],
+            "CSV Recebido": brl(d['csv_recebido']),
+            "PDF Vlr Final":brl(d['valor_final']),
+            "Diferença":    brl(d['diff']),
+            "Página PDF":   d['pagina'],
+        } for d in diferencas])
+        st.dataframe(df_diff, use_container_width=True, hide_index=True)
+        st.markdown(f"**Total das diferenças: {brl(total_diff)}**")
+    else:
+        st.success("✔ Nenhuma diferença de valor encontrada.")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Seção 3: Totais gerais ─────────────────────────────────
+    st.markdown("### 3 · Resumo geral")
+    df_resumo = pd.DataFrame([
+        {"Origem": "PDF (banco)",   "Registros": len(pdf_regs),      "Total": brl(total_pdf)},
+        {"Origem": "CSV (sistema)", "Registros": len(csv_dados),     "Total": brl(total_csv)},
+        {"Origem": "Não lançados",  "Registros": len(faltantes),     "Total": brl(total_faltantes)},
+        {"Origem": "Diferenças",    "Registros": len(diferencas),    "Total": brl(total_diff)},
+        {"Origem": "GAP Total",     "Registros": "—",                "Total": brl(gap_total)},
+    ])
+    st.dataframe(df_resumo, use_container_width=True, hide_index=True)
+
+# ══════════════════════════════════════════════════════════════
+# ABA 4 — CONCILIAÇÃO ITAÚ
+# ══════════════════════════════════════════════════════════════
+with aba_itau:
+    aba_itau()
