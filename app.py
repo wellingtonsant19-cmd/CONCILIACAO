@@ -887,11 +887,12 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-aba_conciliacao, aba_calc, aba_ret, aba_itau = st.tabs([
+aba_conciliacao, aba_calc, aba_ret, aba_itau, aba_bb = st.tabs([
     "⚖️  Conciliação com Planilha",
     "🧮  Calculadora de Combinações",
     "🎯  Liquidação por Retenção",
     "🏦  Conciliação Itaú",
+    "🏛️  Conciliação BB",
 ])
 
 # ══════════════════════════════════════════════════════════════
@@ -1498,3 +1499,325 @@ def render_aba_itau():
 # ══════════════════════════════════════════════════════════════
 with aba_itau:
     render_aba_itau()
+
+
+# ============================================================
+# ABA 5 — CONCILIAÇÃO BB (Extrato × Agências)
+# ============================================================
+
+import re as _re
+import time as _time
+import unicodedata as _unicodedata
+
+_STOP_MATCH = {
+    "MUN","MUNIC","MUNICIPAL","MUNICIPIO","PREFEITURA","PREF",
+    "FUNDO","SAUDE","SECRETARIA","CAMARA","SERVICO","SAMAE",
+    "FMS","SME","PM","CME","DE","DO","DA","DOS","DAS",
+}
+_AMBIGUOS = {
+    "SAUDE","ITA","CUSTODIA","BELA","VERDE","ALEGRE",
+    "NOVA","ALTO","ALTA","BOA","SOL","MAR",
+}
+
+def _bb_normalize(text):
+    if not text:
+        return ""
+    t = str(text).upper().strip()
+    t = _unicodedata.normalize("NFD", t)
+    return "".join(c for c in t if _unicodedata.category(c) != "Mn")
+
+def _bb_extract_cnpj(text):
+    if not text:
+        return None
+    s = str(text)
+    m = _re.search(r"\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}", s)
+    if m:
+        return _re.sub(r"\D", "", m.group())
+    for token in s.split():
+        clean = _re.sub(r"[.\-/]", "", token)
+        if _re.match(r"^\d{14}$", clean):
+            return clean
+    return None
+
+def _bb_consultar_cnpj(cnpj, cache):
+    if cnpj in cache:
+        return cache[cnpj]
+    try:
+        r = __import__("requests").get(
+            f"https://brasilapi.com.br/api/cnpj/v1/{cnpj}", timeout=8)
+        if r.status_code == 200:
+            d = r.json()
+            result = (d.get("municipio","").upper(), d.get("uf","").upper())
+        else:
+            result = ("","")
+    except Exception:
+        result = ("","")
+    cache[cnpj] = result
+    _time.sleep(0.3)
+    return result
+
+@st.cache_data(show_spinner=False)
+def _bb_carregar_agencias(file_bytes, file_name):
+    import io
+    df = pd.read_excel(io.BytesIO(file_bytes), sheet_name="AGENCIAS")
+    agencia_map, municipio_list, seen = {}, [], set()
+    for _, row in df.iterrows():
+        if not pd.notna(row.get("AGENCIA")):
+            continue
+        ag  = str(int(row["AGENCIA"])).zfill(4)
+        mun = str(row["MUNICIPIO"]).strip().upper() if pd.notna(row.get("MUNICIPIO")) else ""
+        uf  = str(row["UF"]).strip().upper()        if pd.notna(row.get("UF"))         else ""
+        if ag and mun:
+            agencia_map[ag] = (mun, uf)
+        if mun:
+            norm = _bb_normalize(mun)
+            if norm not in seen:
+                seen.add(norm)
+                municipio_list.append((norm, mun, uf))
+    municipio_list.sort(key=lambda x: -len(x[0]))
+    return agencia_map, municipio_list
+
+def _bb_buscar_municipio(texto, municipio_list):
+    if not texto:
+        return "", ""
+    norm = _bb_normalize(texto)
+    norm = _re.sub(r"^\d{2}/\d{2}\s+\d{2}:\d{2}\s+", "", norm)
+    norm = _re.sub(r"^\d{2}/\d{2}\s+", "", norm)
+    tokens_texto   = set(_re.findall(r"[A-Z]{3,}", norm)) - _STOP_MATCH
+    palavras_texto = [p for p in _re.findall(r"[A-Z]{4,}", norm) if p not in _STOP_MATCH]
+
+    def word_match(nome, txt):
+        pattern = r"(?<![A-Z])" + _re.escape(nome) + r"(?![A-Z])"
+        return bool(_re.search(pattern, txt))
+
+    for norm_mun, mun, uf in municipio_list:
+        if len(norm_mun) < 5 or norm_mun in _AMBIGUOS:
+            continue
+        if word_match(norm_mun, norm):
+            return mun, uf
+    for norm_mun, mun, uf in municipio_list:
+        tokens_mun = set(_re.findall(r"[A-Z]{3,}", norm_mun)) - _STOP_MATCH - _AMBIGUOS
+        if tokens_mun and tokens_mun.issubset(tokens_texto):
+            return mun, uf
+    for norm_mun, mun, uf in municipio_list:
+        if norm_mun in _AMBIGUOS:
+            continue
+        primeiro = _re.split(r"\s+", norm_mun)[0]
+        for palavra in palavras_texto:
+            sufixo = primeiro[len(palavra):]
+            if primeiro.startswith(palavra) and 1 <= len(sufixo) <= 2 and sufixo != "S":
+                return mun, uf
+    return "", ""
+
+@st.cache_data(show_spinner=False)
+def _bb_ler_extrato(file_bytes, file_name):
+    import io, openpyxl as _opx
+    RED_COLS   = {1, 2, 4, 5, 6, 9}
+    KEPT_NAMES = ["DATA","AGENCIA_ORIGEM","HISTORICO","VALOR","DETALHAMENTO"]
+    wb = _opx.load_workbook(io.BytesIO(file_bytes))
+    ws = wb.active
+    rows_data = []
+    for i, row in enumerate(ws.iter_rows(values_only=True), 1):
+        if i <= 3:
+            continue
+        if all(v is None for v in row):
+            continue
+        rows_data.append([v for j, v in enumerate(row) if j not in RED_COLS])
+    df = pd.DataFrame(rows_data, columns=KEPT_NAMES)
+    df = df[df["DATA"].notna()].copy()
+    for col in df.columns:
+        df[col] = df[col].fillna("").astype(str).str.strip().str.upper()
+    df["AGENCIA_ORIGEM"] = df["AGENCIA_ORIGEM"].str.zfill(4)
+    return df
+
+def _bb_gerar_excel(df):
+    import io, openpyxl as _opx
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+    buf = io.BytesIO()
+    wb  = _opx.Workbook()
+    ws  = wb.active
+    ws.title = "EXTRATO TRATADO"
+    HEADERS = ["DATA","AGENCIA ORIGEM","HISTORICO","VALOR R$","DETALHAMENTO","UF","MUNICIPIO","TITULO","STATUS"]
+    WIDTHS  = [12, 14, 28, 14, 42, 5, 28, 18, 18]
+    HEADER_BG = {
+        "DATA":"1F4E79","AGENCIA ORIGEM":"1F4E79","HISTORICO":"1F4E79",
+        "VALOR R$":"375623","DETALHAMENTO":"00B0F0",
+        "UF":"7030A0","MUNICIPIO":"7030A0","TITULO":"FFFFFF","STATUS":"FFFFFF",
+    }
+    for ci,(h,w) in enumerate(zip(HEADERS,WIDTHS),1):
+        cell = ws.cell(row=1,column=ci,value=h)
+        bg   = HEADER_BG.get(h,"1F4E79")
+        fc   = "000000" if bg == "FFFFFF" else "FFFFFF"
+        cell.fill      = PatternFill("solid",fgColor=bg)
+        cell.font      = Font(bold=True,color=fc,name="Arial",size=10)
+        cell.alignment = Alignment(horizontal="center",vertical="center")
+        ws.column_dimensions[get_column_letter(ci)].width = w
+    ws.row_dimensions[1].height = 28
+    ALT_FILL = PatternFill("solid",fgColor="EBF3FB")
+    COL_MAP  = ["DATA","AGENCIA_ORIGEM","HISTORICO","VALOR","DETALHAMENTO","UF","MUNICIPIO","TITULO","STATUS"]
+    for ri,(_,row) in enumerate(df.iterrows(),2):
+        use_fill = ALT_FILL if ri % 2 == 0 else None
+        for ci,col in enumerate(COL_MAP,1):
+            val  = str(row[col]).upper() if row.get(col,"") else ""
+            cell = ws.cell(row=ri,column=ci,value=val)
+            cell.font      = Font(name="Arial",size=9)
+            cell.alignment = Alignment(vertical="center")
+            if use_fill:
+                cell.fill = use_fill
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(HEADERS))}1"
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
+def render_aba_bb():
+    st.markdown("""
+    <div style="background:#0a1628; border:1px solid #1e293b; border-radius:12px;
+         padding:20px 24px; margin-bottom:24px;">
+        <div style="font-family:'IBM Plex Sans',sans-serif; font-weight:700;
+             font-size:15px; color:#e2e8f0; margin-bottom:6px;">
+            🏛️ Conciliação BB — Extrato de Cobrança
+        </div>
+        <div style="font-size:12px; color:#64748b;">
+            Enriquece o extrato do Banco do Brasil com UF e Município, identificando
+            o pagador via CNPJ (BrasilAPI), nome no texto ou agência de origem.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_ext, col_ag = st.columns(2)
+    with col_ext:
+        up_extrato  = st.file_uploader("📄 Extrato BB (.xlsx)", type=["xlsx","xls"], key="bb_extrato")
+    with col_ag:
+        up_agencias = st.file_uploader("📋 Tabela de Agências (.xlsx)", type=["xlsx","xls"], key="bb_agencias")
+
+    if not up_extrato or not up_agencias:
+        st.info("⬆️ Carregue o extrato BB e a tabela de agências para iniciar.")
+        st.markdown("""
+**Como funciona o enriquecimento (ordem de prioridade):**
+1. 🔍 **CNPJ no detalhamento** → consulta BrasilAPI para obter município e UF
+2. 📍 **Nome de município no texto** → busca na tabela de agências
+3. 🏦 **Agência de origem** → consulta a tabela de agências
+4. ⚠️ **Sem match** → marca como `VERIFICAR`
+        """)
+        return
+
+    with st.spinner("Carregando tabela de agências..."):
+        try:
+            agencia_map, municipio_list = _bb_carregar_agencias(up_agencias.read(), up_agencias.name)
+        except Exception as e:
+            st.error(f"Erro ao ler tabela de agências: {e}")
+            return
+
+    with st.spinner("Lendo extrato BB..."):
+        try:
+            df = _bb_ler_extrato(up_extrato.read(), up_extrato.name)
+        except Exception as e:
+            st.error(f"Erro ao ler extrato: {e}")
+            return
+
+    st.markdown("---")
+    m1, m2, m3 = st.columns(3)
+    m1.markdown(f'<div class="stat-box"><div class="stat-label">Agências carregadas</div><div class="stat-value">{len(agencia_map):,}</div></div>', unsafe_allow_html=True)
+    m2.markdown(f'<div class="stat-box"><div class="stat-label">Municípios únicos</div><div class="stat-value">{len(municipio_list):,}</div></div>', unsafe_allow_html=True)
+    m3.markdown(f'<div class="stat-box"><div class="stat-label">Lançamentos no extrato</div><div class="stat-value green">{len(df):,}</div></div>', unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    processar = st.button("🔍 Processar e Enriquecer", type="primary", use_container_width=True, key="bb_processar")
+
+    if not processar:
+        return
+
+    # ── Enriquecimento com barra de progresso ─────────────
+    df["UF"]        = ""
+    df["MUNICIPIO"] = ""
+    df["TITULO"]    = ""
+    df["STATUS"]    = ""
+
+    cnpj_cache  = {}
+    n_cnpj      = 0
+    n_texto     = 0
+    n_agencia   = 0
+    n_verificar = 0
+
+    barra    = st.progress(0, text="Enriquecendo lançamentos...")
+    total    = len(df)
+
+    for i, (idx, row) in enumerate(df.iterrows()):
+        det = row["DETALHAMENTO"]
+        ag  = row["AGENCIA_ORIGEM"]
+        mun, uf = "", ""
+
+        cnpj = _bb_extract_cnpj(det)
+        if cnpj:
+            mun, uf = _bb_consultar_cnpj(cnpj, cnpj_cache)
+            if mun:
+                n_cnpj += 1
+
+        if not mun:
+            mun, uf = _bb_buscar_municipio(det, municipio_list)
+            if mun:
+                n_texto += 1
+
+        if not mun:
+            mun, uf = agencia_map.get(ag, ("",""))
+            if mun:
+                n_agencia += 1
+
+        if not mun:
+            mun = "VERIFICAR"
+            n_verificar += 1
+
+        df.at[idx,"UF"]        = uf
+        df.at[idx,"MUNICIPIO"] = mun
+
+        pct  = int((i+1)/total*100)
+        txt  = f"Processando {i+1}/{total}..."
+        if cnpj:
+            txt += f" 🔍 CNPJ: {cnpj}"
+        barra.progress(pct, text=txt)
+
+    barra.empty()
+
+    # ── Métricas pós-processamento ─────────────────────────
+    st.markdown("---")
+    r1, r2, r3, r4 = st.columns(4)
+    r1.markdown(f'<div class="stat-box"><div class="stat-label">Via CNPJ</div><div class="stat-value green">{n_cnpj:,}</div></div>', unsafe_allow_html=True)
+    r2.markdown(f'<div class="stat-box"><div class="stat-label">Via texto</div><div class="stat-value green">{n_texto:,}</div></div>', unsafe_allow_html=True)
+    r3.markdown(f'<div class="stat-box"><div class="stat-label">Via agência</div><div class="stat-value">{n_agencia:,}</div></div>', unsafe_allow_html=True)
+    r4.markdown(f'<div class="stat-box"><div class="stat-label">Verificar</div><div class="stat-value {"red" if n_verificar else "green"}">{n_verificar:,}</div></div>', unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Preview da tabela ──────────────────────────────────
+    COLS_PREV = ["DATA","AGENCIA_ORIGEM","HISTORICO","VALOR","UF","MUNICIPIO","DETALHAMENTO"]
+    cols_ok   = [c for c in COLS_PREV if c in df.columns]
+    st.dataframe(df[cols_ok].head(100), use_container_width=True, hide_index=True, height=400)
+
+    if len(df) > 100:
+        st.caption(f"Exibindo 100 de {len(df)} lançamentos. O Excel exportado contém todos.")
+
+    # ── Download Excel ─────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    buf = _bb_gerar_excel(df)
+    st.download_button(
+        label="⬇️ Exportar Excel tratado",
+        data=buf,
+        file_name="extrato_bb_tratado.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+        key="bb_download",
+    )
+
+    if n_verificar:
+        st.warning(f"⚠️ {n_verificar} lançamento(s) marcados como VERIFICAR — município não identificado.")
+
+
+# ══════════════════════════════════════════════════════════════
+# ABA 5 — CONCILIAÇÃO BB
+# ══════════════════════════════════════════════════════════════
+with aba_bb:
+    render_aba_bb()
