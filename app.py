@@ -1564,7 +1564,10 @@ def _bb_carregar_agencias(file_bytes, file_name):
     for _, row in df.iterrows():
         if not pd.notna(row.get("AGENCIA")):
             continue
-        ag  = str(int(row["AGENCIA"])).zfill(4)
+        try:
+            ag = str(int(float(str(row["AGENCIA"])))).zfill(4)
+        except Exception:
+            ag = str(row["AGENCIA"]).strip().zfill(4)
         mun = str(row["MUNICIPIO"]).strip().upper() if pd.notna(row.get("MUNICIPIO")) else ""
         uf  = str(row["UF"]).strip().upper()        if pd.notna(row.get("UF"))         else ""
         if ag and mun:
@@ -1670,8 +1673,17 @@ def _bb_ler_extrato(file_bytes, file_name):
         col_det = next((c for c in df.columns if "HISTOR" in c), None)
 
     # Criar colunas internas normalizadas para uso no enriquecimento
+    # Agência pode vir como float (1234.0) — converter para int antes de string
+    def _normalizar_ag(v):
+        if v is None or str(v).strip() in ("", "nan", "NAN", "None"):
+            return "0000"
+        try:
+            return str(int(float(str(v).strip()))).zfill(4)
+        except Exception:
+            return str(v).strip().zfill(4)
+
     if col_ag:
-        df["_AGENCIA_ORIG"] = df[col_ag].fillna("").astype(str).str.strip()
+        df["_AGENCIA_ORIG"] = df[col_ag].apply(_normalizar_ag)
     else:
         df["_AGENCIA_ORIG"] = "0000"
 
