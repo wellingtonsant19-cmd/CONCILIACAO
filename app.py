@@ -853,7 +853,8 @@ def aba_calculadora():
         s1.markdown(f'<div class="stat-box"><div class="stat-label">Valores colados</div><div class="stat-value">{len(vals)}</div></div>', unsafe_allow_html=True)
         s2.markdown(f'<div class="stat-box"><div class="stat-label">Soma total</div><div class="stat-value" style="font-size:15px;">{brl(sum(vals))}</div></div>', unsafe_allow_html=True)
         s3.markdown(f'<div class="stat-box"><div class="stat-label">Valor alvo</div><div class="stat-value green" style="font-size:15px;">{brl(alvo)}</div></div>', unsafe_allow_html=True)
-        s4.markdown(f'<div class="stat-box"><div class="stat-label">Diferença</div><div class="stat-value {"green" if abs(sum(vals)-alvo)<0.01 else "yellow"}" style="font-size:15px;">{brl(round(sum(vals)-alvo,2))}</div></div>', unsafe_allow_html=True)
+        cor_dif = "green" if abs(sum(vals)-alvo)<0.01 else "yellow"
+        s4.markdown(f'<div class="stat-box"><div class="stat-label">Diferença</div><div class="stat-value {cor_dif}" style="font-size:15px;">{brl(round(sum(vals)-alvo,2))}</div></div>', unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
 
@@ -1020,7 +1021,8 @@ with aba_conciliacao:
                 st.markdown("---")
                 s1, s2, s3, s4 = st.columns(4)
                 s1.markdown(f'<div class="stat-box"><div class="stat-label">Notas analisadas</div><div class="stat-value">{len(df_cli)}</div></div>', unsafe_allow_html=True)
-                s2.markdown(f'<div class="stat-box"><div class="stat-label">Combinações</div><div class="stat-value {"yellow" if len(resultados) > 1 else "green"}">{len(resultados)}</div></div>', unsafe_allow_html=True)
+                cor_combo = "yellow" if len(resultados) > 1 else "green"
+                s2.markdown(f'<div class="stat-box"><div class="stat-label">Combinações</div><div class="stat-value {cor_combo}">{len(resultados)}</div></div>', unsafe_allow_html=True)
                 s3.markdown(f'<div class="stat-box"><div class="stat-label">Tempo</div><div class="stat-value">{meta["tempo_ms"]}ms</div></div>', unsafe_allow_html=True)
                 s4.markdown(f'<div class="stat-box"><div class="stat-label">Algoritmo</div><div class="stat-value" style="font-size:14px;">{meta.get("camada","—")}</div></div>', unsafe_allow_html=True)
 
@@ -1479,9 +1481,12 @@ def render_aba_itau():
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.markdown(f'<div class="stat-box"><div class="stat-label">Liquidações PDF</div><div class="stat-value">{len(pdf_regs):,}</div></div>', unsafe_allow_html=True)
     m2.markdown(f'<div class="stat-box"><div class="stat-label">Registros CSV</div><div class="stat-value">{len(csv_dados):,}</div></div>', unsafe_allow_html=True)
-    m3.markdown(f'<div class="stat-box"><div class="stat-label">Não lançados</div><div class="stat-value {"red" if faltantes else "green"}">{len(faltantes):,}</div></div>', unsafe_allow_html=True)
-    m4.markdown(f'<div class="stat-box"><div class="stat-label">Com diferença</div><div class="stat-value {"yellow" if diferencas else "green"}">{len(diferencas):,}</div></div>', unsafe_allow_html=True)
-    m5.markdown(f'<div class="stat-box"><div class="stat-label">GAP Total</div><div class="stat-value {"red" if abs(gap_total)>0.01 else "green"}" style="font-size:13px;">{brl(gap_total)}</div></div>', unsafe_allow_html=True)
+    cor_falt = "red" if faltantes else "green"
+    m3.markdown(f'<div class="stat-box"><div class="stat-label">Não lançados</div><div class="stat-value {cor_falt}">{len(faltantes):,}</div></div>', unsafe_allow_html=True)
+    cor_diff = "yellow" if diferencas else "green"
+    m4.markdown(f'<div class="stat-box"><div class="stat-label">Com diferença</div><div class="stat-value {cor_diff}">{len(diferencas):,}</div></div>', unsafe_allow_html=True)
+    cor_gap = "red" if abs(gap_total)>0.01 else "green"
+    m5.markdown(f'<div class="stat-box"><div class="stat-label">GAP Total</div><div class="stat-value {cor_gap}" style="font-size:13px;">{brl(gap_total)}</div></div>', unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -1926,7 +1931,8 @@ def render_aba_bb():
     r1.markdown(f'<div class="stat-box"><div class="stat-label">Via CNPJ</div><div class="stat-value green">{n_cnpj:,}</div></div>', unsafe_allow_html=True)
     r2.markdown(f'<div class="stat-box"><div class="stat-label">Via texto</div><div class="stat-value green">{n_texto:,}</div></div>', unsafe_allow_html=True)
     r3.markdown(f'<div class="stat-box"><div class="stat-label">Via agência</div><div class="stat-value">{n_agencia:,}</div></div>', unsafe_allow_html=True)
-    r4.markdown(f'<div class="stat-box"><div class="stat-label">Verificar</div><div class="stat-value {"red" if n_verificar else "green"}">{n_verificar:,}</div></div>', unsafe_allow_html=True)
+    cor_verif = "red" if n_verificar else "green"
+    r4.markdown(f'<div class="stat-box"><div class="stat-label">Verificar</div><div class="stat-value {cor_verif}">{n_verificar:,}</div></div>', unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
